@@ -1,0 +1,52 @@
+import requests
+from bs4 import BeautifulSoup
+import csv
+from urllib.parse import urljoin
+
+# Настройки
+URL = "https://www.bbc.com/news"
+HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+}
+
+def parse_bbc_news():
+    # Загрузка страницы
+    response = requests.get(URL, headers=HEADERS)
+    soup = BeautifulSoup(response.content, 'html.parser')
+    
+    # Поиск новостных блоков
+    news_blocks = soup.find_all('div', {'data-testid': 'edinburgh-card'})
+    
+    results = []
+    for block in news_blocks:
+        try:
+            # Извлечение данных
+            title = block.find('h3').get_text(strip=True)
+            link = block.find('a', {'data-testid': 'internal-link'})['href']
+            description = block.find('p', {'data-testid': 'card-description'})
+            description = description.get_text(strip=True) if description else "No description"
+            
+            # Формирование абсолютной ссылки
+            absolute_link = urljoin(URL, link)
+            
+            results.append({
+                'title': title,
+                'description': description,
+                'link': absolute_link
+            })
+        except (AttributeError, TypeError):
+            continue
+    
+    return results
+
+def save_to_csv(data, filename='bbc_news.csv'):
+    with open(filename, 'w', newline='', encoding='utf-8') as file:
+        writer = csv.DictWriter(file, fieldnames=['title', 'description', 'link'])
+        writer.writeheader()
+        writer.writerows(data)
+
+if __name__ == "__main__":
+    news = parse_bbc_news()
+    print(f"Найдено новостей: {len(news)}")
+    save_to_csv(news)
+    print("Данные сохранены в bbc_news.csv")
