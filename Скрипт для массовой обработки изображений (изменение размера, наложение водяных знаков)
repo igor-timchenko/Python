@@ -1,0 +1,262 @@
+Скрипт для массовой обработки изображений на Python
+-------------------------------------------------------------------------------
+Вот мощный скрипт, который выполняет:
+  Изменение размера изображений
+  Наложение водяных знаков
+  Пакетную обработку целых папок
+  Конвертацию форматов
+  Автоматическое переименование
+_______________________________________________________________________________
+import os
+from PIL import Image, ImageDraw, ImageFont, ImageOps
+import argparse
+from tqdm import tqdm
+
+def process_images(input_path, output_path, operations):
+    """Обработка изображений: изменение размера, водяные знаки и др."""
+    # Создаем выходную папку если ее нет
+    os.makedirs(output_path, exist_ok=True)
+    
+    # Поддерживаемые форматы
+    supported_formats = ('.jpg', '.jpeg', '.png', '.bmp', '.tiff', '.webp')
+    
+    # Собираем список файлов для обработки
+    if os.path.isfile(input_path):
+        files = [input_path]
+    else:
+        files = [os.path.join(root, f) 
+                 for root, _, filenames in os.walk(input_path) 
+                 for f in filenames 
+                 if f.lower().endswith(supported_formats)]
+    
+    # Обрабатываем каждое изображение
+    for file_path in tqdm(files, desc="Обработка изображений"):
+        try:
+            with Image.open(file_path) as img:
+                # Конвертация в RGB (для JPG)
+                if img.mode != 'RGB':
+                    img = img.convert('RGB')
+                
+                # Изменение размера
+                if operations['resize']:
+                    img = resize_image(img, operations['size'], operations['resize_mode'])
+                
+                # Наложение водяного знака
+                if operations['watermark']:
+                    img = add_watermark(
+                        img, 
+                        operations['watermark_text'], 
+                        operations['watermark_image'],
+                        operations['position'],
+                        operations['opacity'],
+                        operations['font_size']
+                    )
+                
+                # Сохранение результата
+                output_file = get_output_filename(file_path, input_path, output_path, operations['format'])
+                save_options = {'quality': operations['quality']}
+                
+                if operations['format'] == 'jpg':
+                    save_options['optimize'] = True
+                    save_options['progressive'] = True
+                
+                img.save(output_file, **save_options)
+                
+        except Exception as e:
+            print(f"\nОшибка обработки {file_path}: {str(e)}")
+
+def resize_image(img, size, mode):
+    """Изменение размера изображения с разными режимами"""
+    if mode == 'cover':
+        img = ImageOps.fit(img, size, method=Image.LANCZOS, bleed=0.0, centering=(0.5, 0.5))
+    elif mode == 'contain':
+        img.thumbnail(size, Image.LANCZOS)
+    elif mode == 'stretch':
+        img = img.resize(size, Image.LANCZOS)
+    elif mode == 'width':
+        ratio = size[0] / img.width
+        new_height = int(img.height * ratio)
+        img = img.resize((size[0], new_height), Image.LANCZOS)
+    elif mode == 'height':
+        ratio = size[1] / img.height
+        new_width = int(img.width * ratio)
+        img = img.resize((new_width, size[1]), Image.LANCZOS)
+    return img
+
+def add_watermark(img, text=None, watermark_image=None, position='center', opacity=0.5, font_size=40):
+    """Добавление текстового или графического водяного знака"""
+    if text:
+        # Текстовый водяной знак
+        watermark = Image.new('RGBA', img.size, (0, 0, 0, 0))
+        draw = ImageDraw.Draw(watermark)
+        
+        # Определение размера шрифта
+        try:
+            font = ImageFont.truetype("arial.ttf", font_size)
+        except:
+            font = ImageFont.load_default()
+            print("Предупреждение: Используется системный шрифт")
+        
+        # Определение позиции
+        text_width, text_height = draw.textsize(text, font=font)
+        position = calculate_position(position, img.size, (text_width, text_height))
+        
+        # Рисуем текст с тенью для лучшей читаемости
+        shadow_position = (position[0] + 2, position[1] + 2)
+        draw.text(shadow_position, text, font=font, fill=(0, 0, 0, int(255 * opacity)))
+        draw.text(position, text, font=font, fill=(255, 255, 255, int(255 * opacity)))
+        
+    elif watermark_image and os.path.exists(watermark_image):
+        # Графический водяной знак
+        watermark = Image.open(watermark_image).convert("RGBA")
+        
+        # Ресайз водяного знака (20% от основной картинки)
+        max_size = int(min(img.size) * 0.2)
+        watermark.thumbnail((max_size, max_size), Image.LANCZOS)
+        
+        # Определение позиции
+        position = calculate_position(position, img.size, watermark.size)
+        
+        # Создаем прозрачный слой для водяного знака
+        watermark_layer = Image.new('RGBA', img.size, (0, 0, 0, 0))
+        
+        # Применяем прозрачность
+        alpha = watermark.split()[3]
+        alpha = alpha.point(lambda p: p * opacity)
+        watermark.putalpha(alpha)
+        
+        # Размещаем водяной знак
+        watermark_layer.paste(watermark, position, watermark)
+        watermark = watermark_layer
+    
+    # Накладываем водяной знак
+    if text or watermark_image:
+        img = Image.alpha_composite(img.convert("RGBA"), watermark).convert("RGB")
+    
+    return img
+
+def calculate_position(position, img_size, watermark_size):
+    """Вычисление позиции водяного знака"""
+    if position == 'top-left':
+        return (10, 10)
+    elif position == 'top-right':
+        return (img_size[0] - watermark_size[0] - 10, 10)
+    elif position == 'bottom-left':
+        return (10, img_size[1] - watermark_size[1] - 10)
+    elif position == 'bottom-right':
+        return (img_size[0] - watermark_size[0] - 10, img_size[1] - watermark_size[1] - 10)
+    elif position == 'center':
+        return ((img_size[0] - watermark_size[0]) // 2, (img_size[1] - watermark_size[1]) // 2)
+    elif position == 'tile':
+        # Для режима плитки нужно будет обработать отдельно
+        return (0, 0)
+    else:
+        return (10, 10)
+
+def get_output_filename(input_path, base_input, base_output, format):
+    """Генерация пути для выходного файла"""
+    # Сохраняем структуру подпапок
+    rel_path = os.path.relpath(os.path.dirname(input_path), base_input)
+    output_dir = os.path.join(base_output, rel_path)
+    os.makedirs(output_dir, exist_ok=True)
+    
+    # Изменяем расширение если нужно
+    filename = os.path.basename(input_path)
+    if format:
+        filename = os.path.splitext(filename)[0] + f'.{format}'
+    
+    return os.path.join(output_dir, filename)
+
+def parse_arguments():
+    """Парсинг аргументов командной строки"""
+    parser = argparse.ArgumentParser(description='Массовая обработка изображений')
+    parser.add_argument('input', help='Путь к файлу или папке с изображениями')
+    parser.add_argument('output', help='Выходная папка')
+    
+    # Опции изменения размера
+    parser.add_argument('--resize', nargs=2, type=int, metavar=('WIDTH', 'HEIGHT'),
+                        help='Изменение размера изображения')
+    parser.add_argument('--resize-mode', choices=['cover', 'contain', 'stretch', 'width', 'height'],
+                        default='cover', help='Режим изменения размера')
+    
+    # Опции водяных знаков
+    parser.add_argument('--watermark-text', help='Текст водяного знака')
+    parser.add_argument('--watermark-image', help='Путь к изображению водяного знака')
+    parser.add_argument('--position', choices=['top-left', 'top-right', 'bottom-left', 
+                                              'bottom-right', 'center', 'tile'],
+                        default='center', help='Позиция водяного знака')
+    parser.add_argument('--opacity', type=float, default=0.5,
+                        help='Прозрачность водяного знака (0.0-1.0)')
+    parser.add_argument('--font-size', type=int, default=40,
+                        help='Размер шрифта для текстового водяного знака')
+    
+    # Другие опции
+    parser.add_argument('--format', choices=['jpg', 'png', 'webp'], 
+                        help='Конвертация в другой формат')
+    parser.add_argument('--quality', type=int, default=85,
+                        help='Качество изображения (1-100)')
+    
+    return parser.parse_args()
+
+if __name__ == "__main__":
+    args = parse_arguments()
+    
+    # Подготовка параметров обработки
+    operations = {
+        'resize': bool(args.resize),
+        'size': args.resize or (0, 0),
+        'resize_mode': args.resize_mode,
+        'watermark': bool(args.watermark_text or args.watermark_image),
+        'watermark_text': args.watermark_text,
+        'watermark_image': args.watermark_image,
+        'position': args.position,
+        'opacity': args.opacity,
+        'font_size': args.font_size,
+        'format': args.format,
+        'quality': args.quality
+    }
+    
+    # Запуск обработки
+    process_images(args.input, args.output, operations)
+    print("\nОбработка завершена успешно!")
+
+_________________________________________________________________________________________
+Советы по улучшению:
+-----------------------------------------------------------------------------------------
+Для продвинутых водяных знаков добавьте:
+-----------------------------------------------------------------------------------------
+# Ротация водяного знака
+watermark = watermark.rotate(45, expand=True)
+
+# Режим плитки
+if operations['position'] == 'tile':
+    for x in range(0, img.width, watermark.width):
+        for y in range(0, img.height, watermark.height):
+            img.paste(watermark, (x, y), watermark)
+-----------------------------------------------------------------------------------------
+Для обработки RAW-файлов установите rawpy:
+-----------------------------------------------------------------------------------------
+pip install rawpy
+-----------------------------------------------------------------------------------------
+Для сохранения EXIF-данных используйте:
+-----------------------------------------------------------------------------------------
+from PIL import Image, ExifTags
+
+# Сохранение EXIF
+exif = img.info.get('exif', b'')
+img.save(output_file, exif=exif, **save_options)
+-----------------------------------------------------------------------------------------
+Для ускорения обработки добавьте многопоточность:
+-----------------------------------------------------------------------------------------
+from concurrent.futures import ThreadPoolExecutor
+
+with ThreadPoolExecutor(max_workers=4) as executor:
+    executor.map(process_single_image, files)
+-----------------------------------------------------------------------------------------
+Для автоматизации создайте .bat/.sh файлы:
+-----------------------------------------------------------------------------------------
+# processing_script.sh
+python image_processor.py ~/photos/input ~/photos/output \
+    --resize 1920 1080 \
+    --watermark-text "Vacation 2023" \
+    --format jpg
