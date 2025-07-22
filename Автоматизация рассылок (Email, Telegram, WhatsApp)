@@ -1,0 +1,130 @@
+Для автоматизации рассылок через Email, Telegram и WhatsApp на Python можно использовать следующие библиотеки и подходы:
+  Установка необходимых библиотек
+    pip install smtplib python-telegram-bot twilio pywhatkit python-dotenv
+________________________________________________________________________________________________________________________
+import smtplib
+import os
+from dotenv import load_dotenv
+from telegram import Bot
+from telegram.error import TelegramError
+from twilio.rest import Client
+import pywhatkit as kit
+
+# Загрузка переменных окружения
+load_dotenv()
+
+class Messenger:
+    def __init__(self):
+        # Email конфигурация
+        self.email_user = os.getenv('EMAIL_USER')
+        self.email_pass = os.getenv('EMAIL_PASSWORD')
+        
+        # Telegram конфигурация
+        self.tg_token = os.getenv('TELEGRAM_TOKEN')
+        self.tg_bot = Bot(token=self.tg_token) if self.tg_token else None
+        
+        # WhatsApp (Twilio) конфигурация
+        self.twilio_sid = os.getenv('TWILIO_SID')
+        self.twilio_token = os.getenv('TWILIO_TOKEN')
+        self.twilio_number = os.getenv('TWILIO_NUMBER')
+
+    def send_email(self, to, subject, body):
+        """Отправка email через SMTP"""
+        try:
+            with smtplib.SMTP_SSL('smtp.gmail.com', 465) as server:
+                server.login(self.email_user, self.email_pass)
+                message = f"Subject: {subject}\n\n{body}"
+                server.sendmail(self.email_user, to, message.encode('utf-8'))
+            return True
+        except Exception as e:
+            print(f"Email error: {e}")
+            return False
+
+    def send_telegram(self, chat_id, message):
+        """Отправка сообщения в Telegram"""
+        if not self.tg_bot:
+            print("Telegram bot not configured!")
+            return False
+        
+        try:
+            self.tg_bot.send_message(chat_id=chat_id, text=message)
+            return True
+        except TelegramError as e:
+            print(f"Telegram error: {e}")
+            return False
+
+    def send_whatsapp_twilio(self, to, message):
+        """Отправка WhatsApp через Twilio API"""
+        if not all([self.twilio_sid, self.twilio_token, self.twilio_number]):
+            print("Twilio not configured!")
+            return False
+        
+        try:
+            client = Client(self.twilio_sid, self.twilio_token)
+            client.messages.create(
+                body=message,
+                from_=f'whatsapp:{self.twilio_number}',
+                to=f'whatsapp:{to}'
+            )
+            return True
+        except Exception as e:
+            print(f"Twilio error: {e}")
+            return False
+
+    def send_whatsapp_direct(self, phone, message):
+        """Отправка WhatsApp через Web (требует активной сессии)"""
+        try:
+            kit.sendwhatmsg_instantly(
+                phone_no=phone, 
+                message=message,
+                tab_close=True
+            )
+            return True
+        except Exception as e:
+            print(f"PyWhatKit error: {e}")
+            return False
+
+# Пример использования
+if __name__ == "__main__":
+    messenger = Messenger()
+    
+    # Отправка Email
+    messenger.send_email(
+        to="recipient@example.com",
+        subject="Test Email",
+        body="Hello from Python!"
+    )
+    
+    # Отправка Telegram
+    messenger.send_telegram(
+        chat_id="YOUR_CHAT_ID",  # Получить через @userinfobot
+        message="Hello from Telegram Bot!"
+    )
+    
+    # Отправка WhatsApp через Twilio
+    messenger.send_whatsapp_twilio(
+        to="+1234567890", 
+        message="Hello via Twilio!"
+    )
+    
+    # Отправка WhatsApp через Web
+    messenger.send_whatsapp_direct(
+        phone="+1234567890",
+        message="Hello via WhatsApp Web!"
+
+_________________________________________________________________________________________
+-----------------------------------------------------------------------------------------
+Файл .env (хранится в корне проекта)
+-----------------------------------------------------------------------------------------
+# Email
+EMAIL_USER=your@gmail.com
+EMAIL_PASSWORD=your-app-password  # Для Gmail: пароль приложения
+
+# Telegram
+TELEGRAM_TOKEN=your_bot_token  # Получить через @BotFather
+
+# WhatsApp (Twilio)
+TWILIO_SID=your_account_sid
+TWILIO_TOKEN=your_auth_token
+TWILIO_NUMBER=+1234567890  # Ваш номер Twilio
+    )
