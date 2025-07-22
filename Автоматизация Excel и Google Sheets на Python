@@ -1,0 +1,179 @@
+Вот пример программы, которая:
+  Обрабатывает Excel-файлы
+  Работает с Google Sheets
+  Генерирует сводные отчеты
+  Автоматизирует рутинные операции
+________________________________________________________________________
+import pandas as pd
+import numpy as np
+from google.oauth2 import service_account
+from googleapiclient.discovery import build
+import os
+
+# ======================================
+# 1. ОБРАБОТКА EXCEL-ФАЙЛОВ
+# ======================================
+
+def process_excel_files(input_path, output_path):
+    """
+    Обработка Excel-отчетов:
+    - Объединение нескольких файлов
+    - Расчет показателей
+    - Генерация сводного отчета
+    """
+    # Объединение файлов из папки
+    all_files = [f for f in os.listdir(input_path) if f.endswith('.xlsx')]
+    dfs = []
+    
+    for file in all_files:
+        df = pd.read_excel(os.path.join(input_path, file))
+        df['Источник'] = file  # Добавляем колонку с именем файла
+        dfs.append(df)
+    
+    combined_df = pd.concat(dfs, ignore_index=True)
+    
+    # Расчет дополнительных показателей
+    combined_df['Общая стоимость'] = combined_df['Количество'] * combined_df['Цена за единицу']
+    combined_df['НДС'] = combined_df['Общая стоимость'] * 0.2
+    
+    # Группировка данных
+    summary = combined_df.groupby('Категория').agg({
+        'Общая стоимость': 'sum',
+        'НДС': 'sum',
+        'Количество': 'sum'
+    }).reset_index()
+    
+    # Сохранение результатов
+    with pd.ExcelWriter(output_path) as writer:
+        combined_df.to_excel(writer, sheet_name='Детализация', index=False)
+        summary.to_excel(writer, sheet_name='Сводка', index=False)
+    
+    print(f"Отчет сгенерирован: {output_path}")
+    return output_path
+
+# ======================================
+# 2. РАБОТА С GOOGLE SHEETS
+# ======================================
+
+def connect_to_google_sheets(creds_file):
+    """Подключение к Google Sheets API"""
+    SCOPES = ['https://www.googleapis.com/auth/spreadsheets']
+    creds = service_account.Credentials.from_service_account_file(
+        creds_file, scopes=SCOPES)
+    service = build('sheets', 'v4', credentials=creds)
+    return service
+
+def update_google_sheet(service, spreadsheet_id, range_name, df):
+    """Обновление Google Sheets данными из DataFrame"""
+    # Конвертация DataFrame в список списков
+    values = [df.columns.tolist()] + df.values.tolist()
+    
+    body = {'values': values}
+    result = service.spreadsheets().values().update(
+        spreadsheetId=spreadsheet_id,
+        range=range_name,
+        valueInputOption='USER_ENTERED',
+        body=body
+    ).execute()
+    
+    print(f"Обновлено {result.get('updatedCells')} ячеек в Google Sheets")
+    return result
+
+# ======================================
+# 3. ГЕНЕРАЦИЯ АВТОМАТИЧЕСКИХ ОТЧЕТОВ
+# ======================================
+
+def generate_daily_report(df):
+    """Генерация ежедневного отчета с ключевыми метриками"""
+    report = pd.DataFrame({
+        'Метрика': [
+            'Общий доход',
+            'Средний чек',
+            'Самые популярные товары',
+            'Общее количество заказов'
+        ],
+        'Значение': [
+            f"{df['Общая стоимость'].sum():,.2f} руб.",
+            f"{df['Общая стоимость'].sum() / len(df):,.2f} руб.",
+            df['Товар'].value_counts().idxmax(),
+            len(df)
+        ]
+    })
+    return report
+
+# ======================================
+# ГЛАВНАЯ ФУНКЦИЯ
+# ======================================
+
+def main():
+    # Конфигурация
+    EXCEL_INPUT_DIR = 'reports/daily'
+    EXCEL_OUTPUT_FILE = 'reports/summary/monthly_report.xlsx'
+    CREDS_FILE = 'google-sheets-creds.json'
+    SPREADSHEET_ID = 'ваш_идентификатор_таблицы'
+    SHEET_NAME = 'Сводка'
+    
+    # 1. Обработка Excel-файлов
+    report_path = process_excel_files(EXCEL_INPUT_DIR, EXCEL_OUTPUT_FILE)
+    
+    # 2. Загрузка данных из сводного отчета
+    summary_df = pd.read_excel(report_path, sheet_name='Сводка')
+    
+    # 3. Генерация ежедневного отчета
+    detailed_df = pd.read_excel(report_path, sheet_name='Детализация')
+    daily_report = generate_daily_report(detailed_df)
+    
+    # 4. Отправка данных в Google Sheets
+    service = connect_to_google_sheets(CREDS_FILE)
+    update_google_sheet(
+        service, 
+        SPREADSHEET_ID, 
+        f"{SHEET_NAME}!A1", 
+        daily_report
+    )
+    
+    print("Автоматизация отчетов завершена успешно!")
+
+if __name__ == "__main__":
+    main()
+
+-------------------------------------------------------------------------------------
+Дополнительные возможности для автоматизации:
+_____________________________________________________________________________________
+# Автоматическая отправка отчета по email
+def send_email_report(report_path, recipient):
+    import smtplib
+    from email.mime.multipart import MIMEMultipart
+    from email.mime.text import MIMEText
+    from email.mime.application import MIMEApplication
+
+    msg = MIMEMultipart()
+    msg['Subject'] = 'Ежемесячный финансовый отчет'
+    msg['From'] = 'reports@company.com'
+    msg['To'] = recipient
+
+    text = MIMEText("Отчет во вложении")
+    msg.attach(text)
+
+    with open(report_path, "rb") as f:
+        attach = MIMEApplication(f.read(), _subtype="xlsx")
+        attach.add_header('Content-Disposition', 'attachment', filename=os.path.basename(report_path))
+        msg.attach(attach)
+
+    with smtplib.SMTP('smtp.server.com', 587) as server:
+        server.login('user', 'password')
+        server.send_message(msg)
+
+# Автоматизация по расписанию (используйте планировщик ОС или библиотеку schedule)
+import schedule
+import time
+
+def job():
+    main()
+    print("Отчет сгенерирован", time.ctime())
+
+schedule.every().day.at("09:00").do(job)
+
+while True:
+    schedule.run_pending()
+    time.sleep(60)
