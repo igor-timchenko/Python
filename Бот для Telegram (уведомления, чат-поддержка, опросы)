@@ -1,0 +1,294 @@
+Пример бота с тремя функциями (уведомления, чат-поддержка, опросы) с использованием библиотеки python-telegram-bot:
+___________________________________________________________________________________________________________________
+import logging
+from telegram import (
+    Update, 
+    Poll, 
+    ReplyKeyboardMarkup, 
+    KeyboardButton,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup
+)
+from telegram.ext import (
+    ApplicationBuilder,
+    ContextTypes,
+    CommandHandler,
+    MessageHandler,
+    CallbackQueryHandler,
+    PollAnswerHandler,
+    filters
+)
+
+# Настройки бота
+BOT_TOKEN = "ВАШ_TELEGRAM_BOT_TOKEN"
+ADMIN_ID = 123456789  # Ваш ID в Telegram
+SUPPORT_CHAT_ID = -1001234567890  # ID чата для пересылки вопросов
+
+# Настройка логирования
+logging.basicConfig(
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    level=logging.INFO
+)
+
+# Глобальные переменные
+user_context = {}
+questions_db = [
+    {"question": "Как сбросить пароль?", "answer": "Используйте кнопку 'Забыли пароль?' на странице входа"},
+    {"question": "Сроки доставки", "answer": "Доставка занимает 1-3 рабочих дня"},
+    {"question": "Возврат товара", "answer": "Возврат возможен в течение 14 дней после покупки"}
+]
+
+# ===================== ОСНОВНЫЕ КОМАНДЫ =====================
+
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработка команды /start"""
+    user = update.effective_user
+    keyboard = [
+        [KeyboardButton("📞 Связаться с поддержкой")],
+        [KeyboardButton("❓ Частые вопросы")]
+    ]
+    reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+    
+    await context.bot.send_message(
+        chat_id=update.effective_chat.id,
+        text=f"Привет, {user.first_name}! Я бот поддержки.\n"
+             "Выберите действие:",
+        reply_markup=reply_markup
+    )
+
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработка команды /help"""
+    await update.message.reply_text(
+        "Доступные команды:\n"
+        "/start - начать диалог\n"
+        "/poll - создать опрос (только для админа)\n"
+        "/notify - отправить уведомление всем пользователям (админ)\n"
+        "/stats - статистика бота (админ)"
+    )
+
+# ===================== СИСТЕМА ПОДДЕРЖКИ =====================
+
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработка текстовых сообщений"""
+    text = update.message.text
+    chat_id = update.effective_chat.id
+    
+    # Ответы на частые вопросы
+    if text == "❓ Частые вопросы":
+        buttons = [
+            [InlineKeyboardButton(q["question"], callback_data=f"faq_{i}")]
+            for i, q in enumerate(questions_db)
+        ]
+        await update.message.reply_text(
+            "Выберите вопрос:",
+            reply_markup=InlineKeyboardMarkup(buttons)
+        )
+    # Запрос связи с поддержкой
+    elif text == "📞 Связаться с поддержкой":
+        user_context[chat_id] = {"awaiting_question": True}
+        await update.message.reply_text(
+            "Опишите ваш вопрос. Наш специалист ответит в течение 15 минут."
+        )
+    # Пересылка вопроса в поддержку
+    elif user_context.get(chat_id, {}).get("awaiting_question"):
+        # Сохраняем вопрос для последующего ответа
+        user_context[chat_id]["question"] = text
+        user_context[chat_id]["awaiting_question"] = False
+        
+        # Кнопка "Ответить" для поддержки
+        keyboard = [[InlineKeyboardButton("📝 Ответить", callback_data=f"reply_{chat_id}")]]
+        
+        # Пересылаем вопрос в чат поддержки
+        await context.bot.send_message(
+            chat_id=SUPPORT_CHAT_ID,
+            text=f"❓ Вопрос от {update.effective_user.full_name} (@{update.effective_user.username}):\n\n{text}",
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+        
+        await update.message.reply_text(
+            "✅ Ваш вопрос отправлен в поддержку. Ожидайте ответа."
+        )
+    # Стандартный ответ
+    else:
+        await update.message.reply_text(
+            "Я не понимаю эту команду. Используйте кнопки меню или /help"
+        )
+
+async def faq_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработка нажатия на вопрос FAQ"""
+    query = update.callback_query
+    await query.answer()
+    
+    # Извлекаем индекс вопроса
+    faq_index = int(query.data.split("_")[1])
+    question = questions_db[faq_index]["question"]
+    answer = questions_db[faq_index]["answer"]
+    
+    await query.edit_message_text(
+        text=f"❓ Вопрос: {question}\n\n💡 Ответ: {answer}"
+    )
+
+async def support_reply_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработка кнопки ответа на вопрос"""
+    query = update.callback_query
+    await query.answer()
+    
+    # Извлекаем ID пользователя
+    user_id = int(query.data.split("_")[1])
+    
+    # Сохраняем контекст для ответа
+    context.user_data["replying_to"] = user_id
+    await query.edit_message_text(
+        text=f"✍️ Отправьте ответ пользователю:"
+    )
+
+# ===================== ОПРОСЫ =====================
+
+async def create_poll(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Создание опроса (только для админа)"""
+    if update.effective_user.id != ADMIN_ID:
+        await update.message.reply_text("⛔ Эта команда доступна только администратору")
+        return
+    
+    # Создаем опрос
+    question = "Как часто вы пользуетесь нашим сервисом?"
+    options = ["Ежедневно", "Несколько раз в неделю", "Раз в неделю", "Редко"]
+    
+    message = await context.bot.send_poll(
+        chat_id=update.effective_chat.id,
+        question=question,
+        options=options,
+        is_anonymous=False,
+        allows_multiple_answers=False
+    )
+    
+    # Сохраняем ID опроса для сбора статистики
+    context.user_data["poll_id"] = message.poll.id
+    await update.message.reply_text(
+        f"📊 Опрос создан! ID: {message.poll.id}"
+    )
+
+async def handle_poll_answer(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработка ответов на опрос"""
+    answer = update.poll_answer
+    user_id = answer.user.id
+    
+    logging.info(
+        f"Пользователь {user_id} выбрал вариант(ы): {answer.option_ids}"
+    )
+
+# ===================== УВЕДОМЛЕНИЯ =====================
+
+async def send_notification(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Отправка уведомления всем пользователям (админ)"""
+    if update.effective_user.id != ADMIN_ID:
+        await update.message.reply_text("⛔ Эта команда доступна только администратору")
+        return
+    
+    # Проверяем наличие текста уведомления
+    if not context.args:
+        await update.message.reply_text("Использование: /notify Текст уведомления")
+        return
+    
+    notification_text = " ".join(context.args)
+    
+    # В реальном приложении здесь должна быть выборка из БД
+    user_ids = [123456789, 987654321]  # Пример списка пользователей
+    
+    for user_id in user_ids:
+        try:
+            await context.bot.send_message(
+                chat_id=user_id,
+                text=f"🔔 Уведомление:\n\n{notification_text}"
+            )
+        except Exception as e:
+            logging.error(f"Ошибка отправки уведомления {user_id}: {e}")
+    
+    await update.message.reply_text(f"✅ Уведомление отправлено {len(user_ids)} пользователям")
+
+# ===================== АДМИН-СТАТИСТИКА =====================
+
+async def bot_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Статистика бота (админ)"""
+    if update.effective_user.id != ADMIN_ID:
+        await update.message.reply_text("⛔ Эта команда доступна только администратору")
+        return
+    
+    # В реальном приложении данные берутся из БД
+    stats_text = (
+        "📊 Статистика бота:\n\n"
+        "• Пользователей: 150\n"
+        "• Активных за месяц: 42\n"
+        "• Задано вопросов: 78\n"
+        "• Создано опросов: 5"
+    )
+    
+    await update.message.reply_text(stats_text)
+
+# ===================== ЗАПУСК БОТА =====================
+
+if __name__ == "__main__":
+    application = ApplicationBuilder().token(BOT_TOKEN).build()
+    
+    # Основные команды
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(CommandHandler("help", help_command))
+    
+    # Система поддержки
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    application.add_handler(CallbackQueryHandler(faq_callback, pattern="^faq_"))
+    application.add_handler(CallbackQueryHandler(support_reply_callback, pattern="^reply_"))
+    
+    # Опросы
+    application.add_handler(CommandHandler("poll", create_poll))
+    application.add_handler(PollAnswerHandler(handle_poll_answer))
+    
+    # Уведомления
+    application.add_handler(CommandHandler("notify", send_notification))
+    
+    # Админ-статистика
+    application.add_handler(CommandHandler("stats", bot_stats))
+    
+    # Запуск бота
+    application.run_polling()
+___________________________________________________________________________________________________________
+
+Дополнительные возможности для улучшения:
+-----------------------------------------------------------------------------------------------------------
+База данных:
+Добавьте SQLite/PostgreSQL для хранения:
+_____________________________________________________________________________________________________
+import sqlite3
+conn = sqlite3.connect('bot.db')
+c = conn.cursor()
+c.execute('CREATE TABLE IF NOT EXISTS users (id INTEGER PRIMARY KEY, username TEXT)')
+_____________________________________________________________________________________________________
+Рассылка по расписанию:
+_____________________________________________________________________________________________________
+import asyncio
+
+async def scheduled_notification(context: ContextTypes.DEFAULT_TYPE):
+    await context.bot.send_message(
+        chat_id=ADMIN_ID, 
+        text="Ежедневный отчет готов!"
+    )
+
+# В main():
+application.job_queue.run_daily(scheduled_notification, time=datetime.time(9, 0, 0))
+_____________________________________________________________________________________________________
+Интеграция с внешними API:
+_____________________________________________________________________________________________________
+import requests
+
+async def weather(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    response = requests.get("https://api.weather.com/...")
+    await update.message.reply_text(f"Погода: {response.json()['temp']}°C")
+_____________________________________________________________________________________________________
+Логирование вопросов:
+_____________________________________________________________________________________________________
+import csv
+
+def log_question(user_id, question):
+    with open('questions.csv', 'a') as f:
+        writer = csv.writer(f)
+        writer.writerow([datetime.now(), user_id, question])
