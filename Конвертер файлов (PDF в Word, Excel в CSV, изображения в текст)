@@ -1,0 +1,117 @@
+Универсальный конвертер файлов на Python
+  Вот программа, которая выполняет три типа конвертации:
+    PDF → Word (DOCX)
+    Excel → CSV
+    Изображение → Текст (OCR)
+___________________________________________________________________________________________________
+import os
+import argparse
+import pandas as pd
+from pdf2docx import Converter
+from PIL import Image
+import pytesseract
+import tempfile
+import sys
+
+# Установите путь к Tesseract OCR если необходимо
+# pytesseract.pytesseract.tesseract_cmd = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
+
+def pdf_to_word(pdf_path, docx_path):
+    """Конвертация PDF в Word (DOCX)"""
+    try:
+        cv = Converter(pdf_path)
+        cv.convert(docx_path)
+        cv.close()
+        return True, f"PDF успешно конвертирован в DOCX: {docx_path}"
+    except Exception as e:
+        return False, f"Ошибка конвертации PDF: {str(e)}"
+
+def excel_to_csv(excel_path, csv_path):
+    """Конвертация Excel в CSV"""
+    try:
+        # Чтение Excel файла
+        df = pd.read_excel(excel_path) if excel_path.endswith('.xlsx') else pd.read_csv(excel_path)
+        
+        # Сохранение в CSV
+        df.to_csv(csv_path, index=False, encoding='utf-8')
+        return True, f"Excel успешно конвертирован в CSV: {csv_path}"
+    except Exception as e:
+        return False, f"Ошибка конвертации Excel: {str(e)}"
+
+def image_to_text(image_path, txt_path):
+    """Извлечение текста из изображения (OCR)"""
+    try:
+        # Проверка существования файла
+        if not os.path.exists(image_path):
+            return False, "Файл изображения не найден"
+        
+        # Открытие изображения
+        img = Image.open(image_path)
+        
+        # Применение OCR
+        text = pytesseract.image_to_string(img, lang='rus+eng')
+        
+        # Сохранение текста
+        with open(txt_path, 'w', encoding='utf-8') as f:
+            f.write(text)
+        
+        return True, f"Текст извлечен и сохранен в: {txt_path}"
+    except Exception as e:
+        return False, f"Ошибка OCR: {str(e)}"
+
+def auto_convert(input_path, output_path=None):
+    """Автоматическое определение типа конвертации по расширению файла"""
+    if not os.path.exists(input_path):
+        return False, "Входной файл не найден"
+    
+    # Определение типа файла
+    ext = os.path.splitext(input_path)[1].lower()
+    
+    # Создание имени выходного файла если не указано
+    if not output_path:
+        if ext == '.pdf':
+            output_path = os.path.splitext(input_path)[0] + '.docx'
+        elif ext in ('.xlsx', '.xls'):
+            output_path = os.path.splitext(input_path)[0] + '.csv'
+        elif ext in ('.jpg', '.jpeg', '.png', '.bmp', '.tiff'):
+            output_path = os.path.splitext(input_path)[0] + '.txt'
+        else:
+            return False, "Неподдерживаемый формат файла"
+    
+    # Выбор соответствующей функции конвертации
+    if ext == '.pdf':
+        return pdf_to_word(input_path, output_path)
+    elif ext in ('.xlsx', '.xls'):
+        return excel_to_csv(input_path, output_path)
+    elif ext in ('.jpg', '.jpeg', '.png', '.bmp', '.tiff'):
+        return image_to_text(input_path, output_path)
+    else:
+        return False, f"Неподдерживаемый формат: {ext}"
+
+def main():
+    parser = argparse.ArgumentParser(
+        description='Универсальный конвертер файлов: PDF->Word, Excel->CSV, Изображение->Текст'
+    )
+    parser.add_argument('input', help='Путь к входному файлу')
+    parser.add_argument('-o', '--output', help='Путь к выходному файлу (опционально)')
+    parser.add_argument('-l', '--list', action='store_true', help='Показать поддерживаемые форматы')
+    
+    args = parser.parse_args()
+    
+    if args.list:
+        print("Поддерживаемые форматы конвертации:")
+        print("  PDF -> DOCX: .pdf → .docx")
+        print("  Excel -> CSV: .xlsx/.xls → .csv")
+        print("  Image -> Text: .jpg/.jpeg/.png/.bmp/.tiff → .txt")
+        return
+    
+    success, message = auto_convert(args.input, args.output)
+    
+    if success:
+        print(f"✅ {message}")
+    else:
+        print(f"❌ {message}")
+        sys.exit(1)
+
+if __name__ == "__main__":
+    main()
