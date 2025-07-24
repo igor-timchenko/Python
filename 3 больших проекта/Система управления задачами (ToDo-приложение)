@@ -1,0 +1,1144 @@
+"""
+Система управления задачами (ToDo-приложение)
+Автор: Тимченко Игорь Васильевич
+"""
+import tkinter as tk
+from tkinter import ttk, messagebox, filedialog
+import sqlite3
+import json
+from datetime import datetime, timedelta
+import calendar
+from tkcalendar import Calendar
+import matplotlib.pyplot as plt
+from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+import os
+import csv
+import smtplib
+from email.mime.text import MimeText
+import hashlib
+import base64
+from cryptography.fernet import Fernet
+import threading
+import time
+
+class DatabaseManager:
+    """Управление базой данных SQLite"""
+    
+    def __init__(self, db_name='tasks.db'):
+        self.db_name = db_name
+        self.init_database()
+    
+    def init_database(self):
+        """Инициализация базы данных"""
+        conn = sqlite3.connect(self.db_name)
+        cursor = conn.cursor()
+        
+        # Создание таблицы задач
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS tasks (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                title TEXT NOT NULL,
+                description TEXT,
+                priority TEXT DEFAULT 'medium',
+                status TEXT DEFAULT 'pending',
+                created_date TEXT,
+                due_date TEXT,
+                completed_date TEXT,
+                category TEXT DEFAULT 'general',
+                tags TEXT,
+                estimated_time INTEGER DEFAULT 0,
+                actual_time INTEGER DEFAULT 0,
+                reminder_date TEXT,
+                is_recurring INTEGER DEFAULT 0,
+                recurrence_pattern TEXT,
+                parent_task_id INTEGER,
+                project_id INTEGER,
+                assigned_to TEXT,
+                progress INTEGER DEFAULT 0
+            )
+        ''')
+        
+        # Создание таблицы проектов
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS projects (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL,
+                description TEXT,
+                start_date TEXT,
+                end_date TEXT,
+                status TEXT DEFAULT 'active',
+                progress INTEGER DEFAULT 0
+            )
+        ''')
+        
+        # Создание таблицы пользователей
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS users (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                username TEXT UNIQUE NOT NULL,
+                password TEXT NOT NULL,
+                email TEXT,
+                created_date TEXT
+            )
+        ''')
+        
+        # Создание таблицы настроек
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS settings (
+                id INTEGER PRIMARY KEY,
+                theme TEXT DEFAULT 'light',
+                language TEXT DEFAULT 'ru',
+                auto_save INTEGER DEFAULT 1,
+                notifications INTEGER DEFAULT 1,
+                backup_interval INTEGER DEFAULT 30,
+                default_priority TEXT DEFAULT 'medium'
+            )
+        ''')
+        
+        # Вставка стандартных настроек, если их нет
+        cursor.execute("SELECT COUNT(*) FROM settings")
+        if cursor.fetchone()[0] == 0:
+            cursor.execute('''
+                INSERT INTO settings (id, theme, language, auto_save, notifications, backup_interval, default_priority)
+                VALUES (1, 'light', 'ru', 1, 1, 30, 'medium')
+            ''')
+        
+        conn.commit()
+        conn.close()
+    
+    def execute_query(self, query, params=None):
+        """Выполнение SQL-запроса"""
+        conn = sqlite3.connect(self.db_name)
+        cursor = conn.cursor()
+        if params:
+            cursor.execute(query, params)
+        else:
+            cursor.execute(query)
+        conn.commit()
+        conn.close()
+    
+    def fetch_all(self, query, params=None):
+        """Получение всех результатов"""
+        conn = sqlite3.connect(self.db_name)
+        cursor = conn.cursor()
+        if params:
+            cursor.execute(query, params)
+        else:
+            cursor.execute(query)
+        results = cursor.fetchall()
+        conn.close()
+        return results
+    
+    def fetch_one(self, query, params=None):
+        """Получение одного результата"""
+        conn = sqlite3.connect(self.db_name)
+        cursor = conn.cursor()
+        if params:
+            cursor.execute(query, params)
+        else:
+            cursor.execute(query)
+        result = cursor.fetchone()
+        conn.close()
+        return result
+
+class Task:
+    """Класс задачи"""
+    
+    def __init__(self, title, description="", priority="medium", 
+                 due_date=None, category="general", tags=None, 
+                 estimated_time=0, project_id=None, assigned_to=None):
+        self.id = None
+        self.title = title
+        self.description = description
+        self.priority = priority
+        self.status = "pending"
+        self.created_date = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        self.due_date = due_date
+        self.completed_date = None
+        self.category = category
+        self.tags = tags or []
+        self.estimated_time = estimated_time
+        self.actual_time = 0
+        self.reminder_date = None
+        self.is_recurring = False
+        self.recurrence_pattern = None
+        self.parent_task_id = None
+        self.project_id = project_id
+        self.assigned_to = assigned_to
+        self.progress = 0
+        self.subtasks = []
+    
+    def add_subtask(self, subtask):
+        """Добавление подзадачи"""
+        self.subtasks.append(subtask)
+    
+    def complete(self):
+        """Завершение задачи"""
+        self.status = "completed"
+        self.completed_date = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        self.progress = 100
+    
+    def to_dict(self):
+        """Преобразование в словарь"""
+        return {
+            'id': self.id,
+            'title': self.title,
+            'description': self.description,
+            'priority': self.priority,
+            'status': self.status,
+            'created_date': self.created_date,
+            'due_date': self.due_date,
+            'completed_date': self.completed_date,
+            'category': self.category,
+            'tags': json.dumps(self.tags),
+            'estimated_time': self.estimated_time,
+            'actual_time': self.actual_time,
+            'reminder_date': self.reminder_date,
+            'is_recurring': int(self.is_recurring),
+            'recurrence_pattern': self.recurrence_pattern,
+            'parent_task_id': self.parent_task_id,
+            'project_id': self.project_id,
+            'assigned_to': self.assigned_to,
+            'progress': self.progress
+        }
+
+class Project:
+    """Класс проекта"""
+    
+    def __init__(self, name, description="", start_date=None, end_date=None):
+        self.id = None
+        self.name = name
+        self.description = description
+        self.start_date = start_date or datetime.now().strftime("%Y-%m-%d")
+        self.end_date = end_date
+        self.status = "active"
+        self.progress = 0
+        self.tasks = []
+    
+    def add_task(self, task):
+        """Добавление задачи в проект"""
+        self.tasks.append(task)
+        task.project_id = self.id
+    
+    def update_progress(self):
+        """Обновление прогресса проекта"""
+        if self.tasks:
+            completed_tasks = sum(1 for task in self.tasks if task.status == "completed")
+            self.progress = int((completed_tasks / len(self.tasks)) * 100)
+        else:
+            self.progress = 0
+
+class SettingsManager:
+    """Управление настройками"""
+    
+    def __init__(self, db_manager):
+        self.db_manager = db_manager
+        self.settings = self.load_settings()
+    
+    def load_settings(self):
+        """Загрузка настроек"""
+        result = self.db_manager.fetch_one("SELECT * FROM settings WHERE id = 1")
+        if result:
+            return {
+                'theme': result[1],
+                'language': result[2],
+                'auto_save': bool(result[3]),
+                'notifications': bool(result[4]),
+                'backup_interval': result[5],
+                'default_priority': result[6]
+            }
+        return {
+            'theme': 'light',
+            'language': 'ru',
+            'auto_save': True,
+            'notifications': True,
+            'backup_interval': 30,
+            'default_priority': 'medium'
+        }
+    
+    def save_settings(self):
+        """Сохранение настроек"""
+        query = '''
+            UPDATE settings SET 
+            theme = ?, language = ?, auto_save = ?, 
+            notifications = ?, backup_interval = ?, default_priority = ?
+            WHERE id = 1
+        '''
+        params = (
+            self.settings['theme'],
+            self.settings['language'],
+            int(self.settings['auto_save']),
+            int(self.settings['notifications']),
+            self.settings['backup_interval'],
+            self.settings['default_priority']
+        )
+        self.db_manager.execute_query(query, params)
+
+class AnalyticsEngine:
+    """Движок аналитики"""
+    
+    def __init__(self, db_manager):
+        self.db_manager = db_manager
+    
+    def get_task_statistics(self):
+        """Получение статистики задач"""
+        stats = {}
+        
+        # Статистика по статусам
+        results = self.db_manager.fetch_all("SELECT status, COUNT(*) FROM tasks GROUP BY status")
+        stats['status'] = dict(results)
+        
+        # Статистика по приоритетам
+        results = self.db_manager.fetch_all("SELECT priority, COUNT(*) FROM tasks GROUP BY priority")
+        stats['priority'] = dict(results)
+        
+        # Статистика по категориям
+        results = self.db_manager.fetch_all("SELECT category, COUNT(*) FROM tasks GROUP BY category")
+        stats['category'] = dict(results)
+        
+        # Общее количество задач
+        result = self.db_manager.fetch_one("SELECT COUNT(*) FROM tasks")
+        stats['total'] = result[0] if result else 0
+        
+        # Завершенные задачи
+        result = self.db_manager.fetch_one("SELECT COUNT(*) FROM tasks WHERE status = 'completed'")
+        stats['completed'] = result[0] if result else 0
+        
+        return stats
+    
+    def get_productivity_report(self, start_date=None, end_date=None):
+        """Генерация отчета о продуктивности"""
+        if not start_date:
+            start_date = (datetime.now() - timedelta(days=30)).strftime("%Y-%m-%d")
+        if not end_date:
+            end_date = datetime.now().strftime("%Y-%m-%d")
+        
+        # Задачи, созданные в периоде
+        result = self.db_manager.fetch_one("""
+            SELECT COUNT(*) FROM tasks 
+            WHERE created_date BETWEEN ? AND ?
+        """, (start_date, end_date + " 23:59:59"))
+        created_count = result[0] if result else 0
+        
+        # Задачи, завершенные в периоде
+        result = self.db_manager.fetch_one("""
+            SELECT COUNT(*) FROM tasks 
+            WHERE completed_date BETWEEN ? AND ?
+        """, (start_date, end_date + " 23:59:59"))
+        completed_count = result[0] if result else 0
+        
+        return {
+            'created': created_count,
+            'completed': completed_count,
+            'completion_rate': (completed_count / max(created_count, 1)) * 100
+        }
+
+class BackupManager:
+    """Управление резервным копированием"""
+    
+    def __init__(self, db_path='tasks.db'):
+        self.db_path = db_path
+        self.backup_dir = 'backups'
+        os.makedirs(self.backup_dir, exist_ok=True)
+    
+    def create_backup(self):
+        """Создание резервной копии"""
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        backup_filename = f"tasks_backup_{timestamp}.db"
+        backup_path = os.path.join(self.backup_dir, backup_filename)
+        
+        try:
+            import shutil
+            shutil.copy2(self.db_path, backup_path)
+            return backup_path
+        except Exception as e:
+            print(f"Ошибка создания резервной копии: {e}")
+            return None
+    
+    def restore_backup(self, backup_path):
+        """Восстановление из резервной копии"""
+        try:
+            import shutil
+            shutil.copy2(backup_path, self.db_path)
+            return True
+        except Exception as e:
+            print(f"Ошибка восстановления: {e}")
+            return False
+
+class TaskListFrame(ttk.Frame):
+    """Фрейм списка задач"""
+    
+    def __init__(self, parent, task_manager):
+        super().__init__(parent)
+        self.task_manager = task_manager
+        self.create_widgets()
+        self.refresh_tasks()
+    
+    def create_widgets(self):
+        """Создание виджетов"""
+        # Панель фильтров
+        filter_frame = ttk.Frame(self)
+        filter_frame.pack(fill='x', padx=10, pady=5)
+        
+        ttk.Label(filter_frame, text="Фильтр:").pack(side='left', padx=5)
+        
+        self.status_var = tk.StringVar(value="all")
+        status_combo = ttk.Combobox(filter_frame, textvariable=self.status_var,
+                                   values=["all", "pending", "in_progress", "completed"])
+        status_combo.pack(side='left', padx=5)
+        status_combo.bind('<<ComboboxSelected>>', lambda e: self.refresh_tasks())
+        
+        self.priority_var = tk.StringVar(value="all")
+        priority_combo = ttk.Combobox(filter_frame, textvariable=self.priority_var,
+                                     values=["all", "low", "medium", "high", "urgent"])
+        priority_combo.pack(side='left', padx=5)
+        priority_combo.bind('<<ComboboxSelected>>', lambda e: self.refresh_tasks())
+        
+        ttk.Button(filter_frame, text="Обновить", 
+                  command=self.refresh_tasks).pack(side='right', padx=5)
+        
+        # Таблица задач
+        columns = ('ID', 'Название', 'Приоритет', 'Статус', 'Срок', 'Категория', 'Прогресс')
+        self.tree = ttk.Treeview(self, columns=columns, show='headings', height=15)
+        
+        for col in columns:
+            self.tree.heading(col, text=col)
+            self.tree.column(col, width=100)
+        
+        # Скроллбары
+        v_scrollbar = ttk.Scrollbar(self, orient='vertical', command=self.tree.yview)
+        h_scrollbar = ttk.Scrollbar(self, orient='horizontal', command=self.tree.xview)
+        self.tree.configure(yscrollcommand=v_scrollbar.set, xscrollcommand=h_scrollbar.set)
+        
+        # Размещение
+        self.tree.pack(side='left', fill='both', expand=True, padx=10, pady=5)
+        v_scrollbar.pack(side='right', fill='y')
+        h_scrollbar.pack(side='bottom', fill='x')
+        
+        # Кнопки управления
+        button_frame = ttk.Frame(self)
+        button_frame.pack(fill='x', padx=10, pady=5)
+        
+        ttk.Button(button_frame, text="Добавить задачу", 
+                  command=self.add_task).pack(side='left', padx=5)
+        ttk.Button(button_frame, text="Редактировать", 
+                  command=self.edit_task).pack(side='left', padx=5)
+        ttk.Button(button_frame, text="Удалить", 
+                  command=self.delete_task).pack(side='left', padx=5)
+        ttk.Button(button_frame, text="Завершить", 
+                  command=self.complete_task).pack(side='left', padx=5)
+        ttk.Button(button_frame, text="Экспорт", 
+                  command=self.export_tasks).pack(side='right', padx=5)
+        
+        # Обработчик двойного клика
+        self.tree.bind('<Double-1>', self.edit_task)
+    
+    def refresh_tasks(self):
+        """Обновление списка задач"""
+        # Очистка таблицы
+        for item in self.tree.get_children():
+            self.tree.delete(item)
+        
+        # Получение фильтров
+        status_filter = self.status_var.get()
+        priority_filter = self.priority_var.get()
+        
+        # Загрузка задач с фильтрацией
+        query = "SELECT * FROM tasks WHERE 1=1"
+        params = []
+        
+        if status_filter != "all":
+            query += " AND status = ?"
+            params.append(status_filter)
+        
+        if priority_filter != "all":
+            query += " AND priority = ?"
+            params.append(priority_filter)
+        
+        query += " ORDER BY created_date DESC"
+        
+        tasks = self.task_manager.db_manager.fetch_all(query, params)
+        
+        for task in tasks:
+            progress = f"{task[19]}%" if task[19] else "0%"
+            values = (task[0], task[1][:30], task[3], task[4], 
+                     task[6] or '', task[8], progress)
+            self.tree.insert('', 'end', values=values, tags=(task[0],))
+    
+    def add_task(self):
+        """Добавление новой задачи"""
+        dialog = TaskDialog(self, self.task_manager)
+        self.refresh_tasks()
+    
+    def edit_task(self, event=None):
+        """Редактирование задачи"""
+        selection = self.tree.selection()
+        if not selection:
+            messagebox.showwarning("Предупреждение", "Выберите задачу для редактирования")
+            return
+        
+        item = self.tree.item(selection[0])
+        task_id = item['tags'][0]
+        
+        dialog = TaskDialog(self, self.task_manager, task_id)
+        self.refresh_tasks()
+    
+    def delete_task(self):
+        """Удаление задачи"""
+        selection = self.tree.selection()
+        if not selection:
+            messagebox.showwarning("Предупреждение", "Выберите задачу для удаления")
+            return
+        
+        if messagebox.askyesno("Подтверждение", "Вы уверены, что хотите удалить задачу?"):
+            item = self.tree.item(selection[0])
+            task_id = item['tags'][0]
+            
+            self.task_manager.db_manager.execute_query(
+                "DELETE FROM tasks WHERE id = ?", (task_id,)
+            )
+            self.refresh_tasks()
+    
+    def complete_task(self):
+        """Завершение задачи"""
+        selection = self.tree.selection()
+        if not selection:
+            messagebox.showwarning("Предупреждение", "Выберите задачу для завершения")
+            return
+        
+        item = self.tree.item(selection[0])
+        task_id = item['tags'][0]
+        
+        self.task_manager.db_manager.execute_query(
+            "UPDATE tasks SET status = 'completed', completed_date = ?, progress = 100 WHERE id = ?",
+            (datetime.now().strftime("%Y-%m-%d %H:%M:%S"), task_id)
+        )
+        self.refresh_tasks()
+    
+    def export_tasks(self):
+        """Экспорт задач в CSV"""
+        filename = filedialog.asksaveasfilename(
+            defaultextension=".csv",
+            filetypes=[("CSV files", "*.csv"), ("All files", "*.*")]
+        )
+        
+        if filename:
+            try:
+                tasks = self.task_manager.db_manager.fetch_all(
+                    "SELECT * FROM tasks ORDER BY created_date DESC"
+                )
+                
+                with open(filename, 'w', newline='', encoding='utf-8') as csvfile:
+                    writer = csv.writer(csvfile)
+                    writer.writerow(['ID', 'Название', 'Описание', 'Приоритет', 'Статус',
+                                   'Дата создания', 'Срок', 'Дата завершения', 'Категория'])
+                    
+                    for task in tasks:
+                        writer.writerow([
+                            task[0], task[1], task[2], task[3], task[4],
+                            task[5], task[6], task[7], task[8]
+                        ])
+                
+                messagebox.showinfo("Успех", "Задачи успешно экспортированы")
+            except Exception as e:
+                messagebox.showerror("Ошибка", f"Ошибка экспорта: {str(e)}")
+
+class TaskDialog:
+    """Диалоговое окно задачи"""
+    
+    def __init__(self, parent, task_manager, task_id=None):
+        self.parent = parent
+        self.task_manager = task_manager
+        self.task_id = task_id
+        
+        self.window = tk.Toplevel(parent)
+        self.window.title("Задача" if not task_id else "Редактировать задачу")
+        self.window.geometry("500x600")
+        self.window.transient(parent)
+        self.window.grab_set()
+        
+        self.create_widgets()
+        if task_id:
+            self.load_task_data()
+        
+        self.window.wait_window()
+    
+    def create_widgets(self):
+        """Создание виджетов"""
+        # Основная рамка
+        main_frame = ttk.Frame(self.window, padding="10")
+        main_frame.pack(fill='both', expand=True)
+        
+        # Название
+        ttk.Label(main_frame, text="Название:").grid(row=0, column=0, sticky='w', pady=5)
+        self.title_var = tk.StringVar()
+        self.title_entry = ttk.Entry(main_frame, textvariable=self.title_var, width=40)
+        self.title_entry.grid(row=0, column=1, pady=5, padx=5)
+        
+        # Описание
+        ttk.Label(main_frame, text="Описание:").grid(row=1, column=0, sticky='nw', pady=5)
+        self.description_var = tk.StringVar()
+        self.description_text = tk.Text(main_frame, width=40, height=5)
+        self.description_text.grid(row=1, column=1, pady=5, padx=5)
+        
+        # Приоритет
+        ttk.Label(main_frame, text="Приоритет:").grid(row=2, column=0, sticky='w', pady=5)
+        self.priority_var = tk.StringVar(value="medium")
+        priority_combo = ttk.Combobox(main_frame, textvariable=self.priority_var,
+                                     values=["low", "medium", "high", "urgent"], width=37)
+        priority_combo.grid(row=2, column=1, pady=5, padx=5)
+        
+        # Категория
+        ttk.Label(main_frame, text="Категория:").grid(row=3, column=0, sticky='w', pady=5)
+        self.category_var = tk.StringVar(value="general")
+        categories = ["general", "work", "personal", "shopping", "health", "education"]
+        category_combo = ttk.Combobox(main_frame, textvariable=self.category_var,
+                                     values=categories, width=37)
+        category_combo.grid(row=3, column=1, pady=5, padx=5)
+        
+        # Срок выполнения
+        ttk.Label(main_frame, text="Срок выполнения:").grid(row=4, column=0, sticky='w', pady=5)
+        self.due_date_var = tk.StringVar()
+        self.due_date_entry = ttk.Entry(main_frame, textvariable=self.due_date_var, width=30)
+        self.due_date_entry.grid(row=4, column=1, pady=5, padx=5)
+        
+        # Кнопка календаря
+        ttk.Button(main_frame, text="📅", width=3,
+                  command=self.show_calendar).grid(row=4, column=2, pady=5, padx=2)
+        
+        # Оценка времени (часы)
+        ttk.Label(main_frame, text="Оценка времени (часы):").grid(row=5, column=0, sticky='w', pady=5)
+        self.estimated_time_var = tk.IntVar()
+        time_spinbox = ttk.Spinbox(main_frame, from_=0, to=1000, 
+                                  textvariable=self.estimated_time_var, width=37)
+        time_spinbox.grid(row=5, column=1, pady=5, padx=5)
+        
+        # Прогресс
+        ttk.Label(main_frame, text="Прогресс (%):").grid(row=6, column=0, sticky='w', pady=5)
+        self.progress_var = tk.IntVar()
+        progress_spinbox = ttk.Spinbox(main_frame, from_=0, to=100, 
+                                      textvariable=self.progress_var, width=37)
+        progress_spinbox.grid(row=6, column=1, pady=5, padx=5)
+        
+        # Теги
+        ttk.Label(main_frame, text="Теги (через запятую):").grid(row=7, column=0, sticky='w', pady=5)
+        self.tags_var = tk.StringVar()
+        self.tags_entry = ttk.Entry(main_frame, textvariable=self.tags_var, width=40)
+        self.tags_entry.grid(row=7, column=1, pady=5, padx=5)
+        
+        # Кнопки
+        button_frame = ttk.Frame(main_frame)
+        button_frame.grid(row=8, column=0, columnspan=3, pady=20)
+        
+        ttk.Button(button_frame, text="Сохранить", 
+                  command=self.save_task).pack(side='left', padx=5)
+        ttk.Button(button_frame, text="Отмена", 
+                  command=self.window.destroy).pack(side='left', padx=5)
+    
+    def show_calendar(self):
+        """Показ календаря для выбора даты"""
+        def on_date_select():
+            selected_date = cal.get_date()
+            self.due_date_var.set(selected_date)
+            calendar_window.destroy()
+        
+        calendar_window = tk.Toplevel(self.window)
+        calendar_window.title("Выбор даты")
+        calendar_window.geometry("300x300")
+        calendar_window.transient(self.window)
+        calendar_window.grab_set()
+        
+        cal = Calendar(calendar_window, selectmode='day', 
+                      year=datetime.now().year,
+                      month=datetime.now().month,
+                      day=datetime.now().day)
+        cal.pack(pady=20)
+        
+        ttk.Button(calendar_window, text="Выбрать", 
+                  command=on_date_select).pack(pady=10)
+    
+    def load_task_data(self):
+        """Загрузка данных задачи для редактирования"""
+        task = self.task_manager.db_manager.fetch_one(
+            "SELECT * FROM tasks WHERE id = ?", (self.task_id,)
+        )
+        
+        if task:
+            self.title_var.set(task[1])
+            self.description_text.insert('1.0', task[2] or '')
+            self.priority_var.set(task[3])
+            self.category_var.set(task[8])
+            self.due_date_var.set(task[6] or '')
+            self.estimated_time_var.set(task[10] or 0)
+            self.progress_var.set(task[19] or 0)
+            if task[9]:  # tags
+                try:
+                    tags = json.loads(task[9])
+                    self.tags_var.set(', '.join(tags))
+                except:
+                    self.tags_var.set(task[9] or '')
+    
+    def save_task(self):
+        """Сохранение задачи"""
+        title = self.title_var.get().strip()
+        if not title:
+            messagebox.showerror("Ошибка", "Введите название задачи")
+            return
+        
+        description = self.description_text.get('1.0', 'end').strip()
+        tags_str = self.tags_var.get().strip()
+        tags = [tag.strip() for tag in tags_str.split(',') if tag.strip()] if tags_str else []
+        
+        if self.task_id:  # Редактирование существующей задачи
+            query = '''
+                UPDATE tasks SET 
+                title = ?, description = ?, priority = ?, category = ?,
+                due_date = ?, estimated_time = ?, progress = ?, tags = ?
+                WHERE id = ?
+            '''
+            params = (
+                title, description, self.priority_var.get(), self.category_var.get(),
+                self.due_date_var.get() or None, self.estimated_time_var.get(),
+                self.progress_var.get(), json.dumps(tags), self.task_id
+            )
+        else:  # Создание новой задачи
+            query = '''
+                INSERT INTO tasks 
+                (title, description, priority, status, created_date, due_date, 
+                 category, tags, estimated_time, progress)
+                VALUES (?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?)
+            '''
+            params = (
+                title, description, self.priority_var.get(),
+                datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                self.due_date_var.get() or None, self.category_var.get(),
+                json.dumps(tags), self.estimated_time_var.get(), self.progress_var.get()
+            )
+        
+        try:
+            self.task_manager.db_manager.execute_query(query, params)
+            messagebox.showinfo("Успех", "Задача сохранена")
+            self.window.destroy()
+        except Exception as e:
+            messagebox.showerror("Ошибка", f"Ошибка сохранения: {str(e)}")
+
+class AnalyticsFrame(ttk.Frame):
+    """Фрейм аналитики"""
+    
+    def __init__(self, parent, task_manager):
+        super().__init__(parent)
+        self.task_manager = task_manager
+        self.analytics_engine = AnalyticsEngine(task_manager.db_manager)
+        self.create_widgets()
+        self.update_analytics()
+    
+    def create_widgets(self):
+        """Создание виджетов"""
+        # Верхняя панель
+        top_frame = ttk.Frame(self)
+        top_frame.pack(fill='x', padx=10, pady=5)
+        
+        ttk.Button(top_frame, text="Обновить", 
+                  command=self.update_analytics).pack(side='right')
+        
+        # Основная область
+        self.notebook = ttk.Notebook(self)
+        self.notebook.pack(fill='both', expand=True, padx=10, pady=5)
+        
+        # Вкладка статистики
+        self.stats_frame = ttk.Frame(self.notebook)
+        self.notebook.add(self.stats_frame, text="Статистика")
+        
+        # Вкладка графиков
+        self.charts_frame = ttk.Frame(self.notebook)
+        self.notebook.add(self.charts_frame, text="Графики")
+        
+        # Вкладка отчетов
+        self.reports_frame = ttk.Frame(self.notebook)
+        self.notebook.add(self.reports_frame, text="Отчеты")
+    
+    def update_analytics(self):
+        """Обновление аналитики"""
+        self.update_statistics()
+        self.update_charts()
+        self.update_reports()
+    
+    def update_statistics(self):
+        """Обновление статистики"""
+        # Очистка фрейма
+        for widget in self.stats_frame.winfo_children():
+            widget.destroy()
+        
+        stats = self.analytics_engine.get_task_statistics()
+        
+        # Создание сетки статистики
+        row = 0
+        ttk.Label(self.stats_frame, text="Общая статистика", 
+                 font=('Arial', 12, 'bold')).grid(row=row, column=0, columnspan=2, pady=10)
+        row += 1
+        
+        ttk.Label(self.stats_frame, text="Всего задач:").grid(row=row, column=0, sticky='w', padx=10)
+        ttk.Label(self.stats_frame, text=str(stats.get('total', 0))).grid(row=row, column=1, sticky='w')
+        row += 1
+        
+        ttk.Label(self.stats_frame, text="Завершено:").grid(row=row, column=0, sticky='w', padx=10)
+        ttk.Label(self.stats_frame, text=str(stats.get('completed', 0))).grid(row=row, column=1, sticky='w')
+        row += 1
+        
+        completion_rate = (stats.get('completed', 0) / max(stats.get('total', 1), 1)) * 100
+        ttk.Label(self.stats_frame, text="Процент завершения:").grid(row=row, column=0, sticky='w', padx=10)
+        ttk.Label(self.stats_frame, text=f"{completion_rate:.1f}%").grid(row=row, column=1, sticky='w')
+        row += 1
+        
+        # Статистика по статусам
+        ttk.Label(self.stats_frame, text="По статусам", 
+                 font=('Arial', 12, 'bold')).grid(row=row, column=0, columnspan=2, pady=10)
+        row += 1
+        
+        for status, count in stats.get('status', {}).items():
+            ttk.Label(self.stats_frame, text=f"{status}:").grid(row=row, column=0, sticky='w', padx=10)
+            ttk.Label(self.stats_frame, text=str(count)).grid(row=row, column=1, sticky='w')
+            row += 1
+        
+        # Статистика по приоритетам
+        ttk.Label(self.stats_frame, text="По приоритетам", 
+                 font=('Arial', 12, 'bold')).grid(row=row, column=0, columnspan=2, pady=10)
+        row += 1
+        
+        for priority, count in stats.get('priority', {}).items():
+            ttk.Label(self.stats_frame, text=f"{priority}:").grid(row=row, column=0, sticky='w', padx=10)
+            ttk.Label(self.stats_frame, text=str(count)).grid(row=row, column=1, sticky='w')
+            row += 1
+    
+    def update_charts(self):
+        """Обновление графиков"""
+        # Очистка фрейма
+        for widget in self.charts_frame.winfo_children():
+            widget.destroy()
+        
+        # Создание фигуры matplotlib
+        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 5))
+        
+        # График по статусам
+        stats = self.analytics_engine.get_task_statistics()
+        status_data = stats.get('status', {})
+        if status_data:
+            ax1.pie(status_data.values(), labels=status_data.keys(), autopct='%1.1f%%')
+            ax1.set_title('Распределение по статусам')
+        
+        # График по приоритетам
+        priority_data = stats.get('priority', {})
+        if priority_data:
+            ax2.bar(priority_data.keys(), priority_data.values())
+            ax2.set_title('Распределение по приоритетам')
+            ax2.set_ylabel('Количество')
+        
+        # Встраивание графика в Tkinter
+        canvas = FigureCanvasTkAgg(fig, self.charts_frame)
+        canvas.draw()
+        canvas.get_tk_widget().pack(fill='both', expand=True)
+    
+    def update_reports(self):
+        """Обновление отчетов"""
+        # Очистка фрейма
+        for widget in self.reports_frame.winfo_children():
+            widget.destroy()
+        
+        # Генерация отчета за последние 30 дней
+        report = self.analytics_engine.get_productivity_report()
+        
+        ttk.Label(self.reports_frame, text="Отчет о продуктивности", 
+                 font=('Arial', 12, 'bold')).pack(pady=10)
+        
+        ttk.Label(self.reports_frame, 
+                 text=f"Создано задач: {report['created']}").pack(anchor='w', padx=20)
+        ttk.Label(self.reports_frame, 
+                 text=f"Завершено задач: {report['completed']}").pack(anchor='w', padx=20)
+        ttk.Label(self.reports_frame, 
+                 text=f"Процент завершения: {report['completion_rate']:.1f}%").pack(anchor='w', padx=20)
+
+class SettingsFrame(ttk.Frame):
+    """Фрейм настроек"""
+    
+    def __init__(self, parent, task_manager):
+        super().__init__(parent)
+        self.task_manager = task_manager
+        self.settings_manager = task_manager.settings_manager
+        self.create_widgets()
+        self.load_settings()
+    
+    def create_widgets(self):
+        """Создание виджетов"""
+        # Основная рамка
+        main_frame = ttk.Frame(self, padding="20")
+        main_frame.pack(fill='both', expand=True)
+        
+        ttk.Label(main_frame, text="Настройки", 
+                 font=('Arial', 14, 'bold')).pack(pady=10)
+        
+        # Тема
+        theme_frame = ttk.Frame(main_frame)
+        theme_frame.pack(fill='x', pady=5)
+        
+        ttk.Label(theme_frame, text="Тема:").pack(side='left')
+        self.theme_var = tk.StringVar()
+        theme_combo = ttk.Combobox(theme_frame, textvariable=self.theme_var,
+                                  values=["light", "dark"], width=20)
+        theme_combo.pack(side='left', padx=10)
+        
+        # Язык
+        language_frame = ttk.Frame(main_frame)
+        language_frame.pack(fill='x', pady=5)
+        
+        ttk.Label(language_frame, text="Язык:").pack(side='left')
+        self.language_var = tk.StringVar()
+        language_combo = ttk.Combobox(language_frame, textvariable=self.language_var,
+                                     values=["ru", "en"], width=20)
+        language_combo.pack(side='left', padx=10)
+        
+        # Автосохранение
+        autosave_frame = ttk.Frame(main_frame)
+        autosave_frame.pack(fill='x', pady=5)
+        
+        ttk.Label(autosave_frame, text="Автосохранение:").pack(side='left')
+        self.autosave_var = tk.BooleanVar()
+        autosave_check = ttk.Checkbutton(autosave_frame, variable=self.autosave_var)
+        autosave_check.pack(side='left', padx=10)
+        
+        # Уведомления
+        notifications_frame = ttk.Frame(main_frame)
+        notifications_frame.pack(fill='x', pady=5)
+        
+        ttk.Label(notifications_frame, text="Уведомления:").pack(side='left')
+        self.notifications_var = tk.BooleanVar()
+        notifications_check = ttk.Checkbutton(notifications_frame, variable=self.notifications_var)
+        notifications_check.pack(side='left', padx=10)
+        
+        # Интервал резервного копирования
+        backup_frame = ttk.Frame(main_frame)
+        backup_frame.pack(fill='x', pady=5)
+        
+        ttk.Label(backup_frame, text="Интервал бэкапа (мин):").pack(side='left')
+        self.backup_interval_var = tk.IntVar()
+        backup_spinbox = ttk.Spinbox(backup_frame, from_=1, to=1440, 
+                                    textvariable=self.backup_interval_var, width=18)
+        backup_spinbox.pack(side='left', padx=10)
+        
+        # Приоритет по умолчанию
+        priority_frame = ttk.Frame(main_frame)
+        priority_frame.pack(fill='x', pady=5)
+        
+        ttk.Label(priority_frame, text="Приоритет по умолчанию:").pack(side='left')
+        self.default_priority_var = tk.StringVar()
+        priority_combo = ttk.Combobox(priority_frame, textvariable=self.default_priority_var,
+                                     values=["low", "medium", "high", "urgent"], width=18)
+        priority_combo.pack(side='left', padx=10)
+        
+        # Кнопки
+        button_frame = ttk.Frame(main_frame)
+        button_frame.pack(fill='x', pady=20)
+        
+        ttk.Button(button_frame, text="Сохранить", 
+                  command=self.save_settings).pack(side='left', padx=5)
+        ttk.Button(button_frame, text="Сбросить", 
+                  command=self.load_settings).pack(side='left', padx=5)
+        ttk.Button(button_frame, text="Создать бэкап", 
+                  command=self.create_backup).pack(side='right', padx=5)
+    
+    def load_settings(self):
+        """Загрузка настроек"""
+        settings = self.settings_manager.settings
+        self.theme_var.set(settings['theme'])
+        self.language_var.set(settings['language'])
+        self.autosave_var.set(settings['auto_save'])
+        self.notifications_var.set(settings['notifications'])
+        self.backup_interval_var.set(settings['backup_interval'])
+        self.default_priority_var.set(settings['default_priority'])
+    
+    def save_settings(self):
+        """Сохранение настроек"""
+        self.settings_manager.settings.update({
+            'theme': self.theme_var.get(),
+            'language': self.language_var.get(),
+            'auto_save': self.autosave_var.get(),
+            'notifications': self.notifications_var.get(),
+            'backup_interval': self.backup_interval_var.get(),
+            'default_priority': self.default_priority_var.get()
+        })
+        self.settings_manager.save_settings()
+        messagebox.showinfo("Успех", "Настройки сохранены")
+    
+    def create_backup(self):
+        """Создание резервной копии"""
+        backup_manager = BackupManager()
+        backup_path = backup_manager.create_backup()
+        if backup_path:
+            messagebox.showinfo("Успех", f"Резервная копия создана: {backup_path}")
+        else:
+            messagebox.showerror("Ошибка", "Не удалось создать резервную копию")
+
+class TaskManagerApp:
+    """Основное приложение"""
+    
+    def __init__(self):
+        self.root = tk.Tk()
+        self.root.title("Task Manager Pro")
+        self.root.geometry("1000x700")
+        
+        # Инициализация компонентов
+        self.db_manager = DatabaseManager()
+        self.settings_manager = SettingsManager(self.db_manager)
+        self.backup_manager = BackupManager()
+        
+        self.create_menu()
+        self.create_notebook()
+        self.setup_auto_backup()
+        
+        # Загрузка темы
+        self.apply_theme()
+    
+    def create_menu(self):
+        """Создание меню"""
+        menubar = tk.Menu(self.root)
+        self.root.config(menu=menubar)
+        
+        # Меню файл
+        file_menu = tk.Menu(menubar, tearoff=0)
+        menubar.add_cascade(label="Файл", menu=file_menu)
+        file_menu.add_command(label="Экспорт задач", command=self.export_tasks)
+        file_menu.add_command(label="Импорт задач", command=self.import_tasks)
+        file_menu.add_separator()
+        file_menu.add_command(label="Выход", command=self.root.quit)
+        
+        # Меню инструменты
+        tools_menu = tk.Menu(menubar, tearoff=0)
+        menubar.add_cascade(label="Инструменты", menu=tools_menu)
+        tools_menu.add_command(label="Создать бэкап", command=self.create_backup)
+        tools_menu.add_command(label="Восстановить бэкап", command=self.restore_backup)
+        tools_menu.add_separator()
+        tools_menu.add_command(label="Очистить завершенные задачи", command=self.clear_completed)
+    
+    def create_notebook(self):
+        """Создание вкладок"""
+        self.notebook = ttk.Notebook(self.root)
+        self.notebook.pack(fill='both', expand=True, padx=5, pady=5)
+        
+        # Вкладка задач
+        self.tasks_frame = TaskListFrame(self.notebook, self)
+        self.notebook.add(self.tasks_frame, text="Задачи")
+        
+        # Вкладка аналитики
+        self.analytics_frame = AnalyticsFrame(self.notebook, self)
+        self.notebook.add(self.analytics_frame, text="Аналитика")
+        
+        # Вкладка настроек
+        self.settings_frame = SettingsFrame(self.notebook, self)
+        self.notebook.add(self.settings_frame, text="Настройки")
+    
+    def setup_auto_backup(self):
+        """Настройка автоматического резервного копирования"""
+        def backup_worker():
+            while True:
+                interval = self.settings_manager.settings['backup_interval']
+                time.sleep(interval * 60)  # Переводим минуты в секунды
+                if self.settings_manager.settings['auto_save']:
+                    self.backup_manager.create_backup()
+        
+        backup_thread = threading.Thread(target=backup_worker, daemon=True)
+        backup_thread.start()
+    
+    def apply_theme(self):
+        """Применение темы"""
+        theme = self.settings_manager.settings['theme']
+        if theme == 'dark':
+            style = ttk.Style()
+            style.theme_use('clam')
+            # Дополнительные настройки темной темы
+        else:
+            style = ttk.Style()
+            style.theme_use('default')
+    
+    def export_tasks(self):
+        """Экспорт задач"""
+        self.tasks_frame.export_tasks()
+    
+    def import_tasks(self):
+        """Импорт задач"""
+        filename = filedialog.askopenfilename(
+            filetypes=[("CSV files", "*.csv"), ("All files", "*.*")]
+        )
+        
+        if filename:
+            try:
+                with open(filename, 'r', encoding='utf-8') as csvfile:
+                    reader = csv.reader(csvfile)
+                    next(reader)  # Пропуск заголовка
+                    
+                    for row in reader:
+                        if len(row) >= 9:
+                            query = '''
+                                INSERT INTO tasks 
+                                (title, description, priority, status, created_date, 
+                                 due_date, completed_date, category)
+                                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                            '''
+                            params = tuple(row[1:9])
+                            self.db_manager.execute_query(query, params)
+                
+                messagebox.showinfo("Успех", "Задачи успешно импортированы")
+                self.tasks_frame.refresh_tasks()
+            except Exception as e:
+                messagebox.showerror("Ошибка", f"Ошибка импорта: {str(e)}")
+    
+    def create_backup(self):
+        """Создание резервной копии"""
+        backup_path = self.backup_manager.create_backup()
+        if backup_path:
+            messagebox.showinfo("Успех", f"Резервная копия создана: {backup_path}")
+        else:
+            messagebox.showerror("Ошибка", "Не удалось создать резервную копию")
+    
+    def restore_backup(self):
+        """Восстановление из резервной копии"""
+        filename = filedialog.askopenfilename(
+            initialdir="backups",
+            filetypes=[("Database files", "*.db"), ("All files", "*.*")]
+        )
+        
+        if filename:
+            if messagebox.askyesno("Подтверждение", 
+                                 "Вы уверены, что хотите восстановить данные? Текущие данные будут потеряны."):
+                if self.backup_manager.restore_backup(filename):
+                    messagebox.showinfo("Успех", "Данные восстановлены")
+                    self.tasks_frame.refresh_tasks()
+                else:
+                    messagebox.showerror("Ошибка", "Не удалось восстановить данные")
+    
+    def clear_completed(self):
+        """Очистка завершенных задач"""
+        if messagebox.askyesno("Подтверждение", "Удалить все завершенные задачи?"):
+            self.db_manager.execute_query("DELETE FROM tasks WHERE status = 'completed'")
+            self.tasks_frame.refresh_tasks()
+            messagebox.showinfo("Успех", "Завершенные задачи удалены")
+    
+    def run(self):
+        """Запуск приложения"""
+        self.root.mainloop()
+
+def main():
+    """Главная функция"""
+    try:
+        # Проверка наличия необходимых библиотек
+        import tkcalendar
+        import matplotlib
+        import cryptography
+    except ImportError as e:
+        print(f"Необходимо установить дополнительные библиотеки: {e}")
+        print("pip install tkcalendar matplotlib cryptography")
+        return
+    
+    app = TaskManagerApp()
+    app.run()
+
+if __name__ == "__main__":
+    main()
