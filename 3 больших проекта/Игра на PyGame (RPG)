@@ -1,0 +1,1225 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+RPG Игра на PyGame
+Автор: [Ваше имя]
+Версия: 1.0
+"""
+
+import pygame
+import json
+import math
+import random
+import os
+from enum import Enum
+from datetime import datetime
+
+# Инициализация Pygame
+pygame.init()
+pygame.mixer.init()
+
+# Константы
+SCREEN_WIDTH = 1024
+SCREEN_HEIGHT = 768
+TILE_SIZE = 32
+FPS = 60
+
+# Цвета
+WHITE = (255, 255, 255)
+BLACK = (0, 0, 0)
+RED = (255, 0, 0)
+GREEN = (0, 255, 0)
+BLUE = (0, 0, 255)
+YELLOW = (255, 255, 0)
+GRAY = (128, 128, 128)
+DARK_GRAY = (64, 64, 64)
+LIGHT_BLUE = (173, 216, 230)
+BROWN = (139, 69, 19)
+DARK_GREEN = (0, 100, 0)
+
+class GameState(Enum):
+    """Состояния игры"""
+    MENU = 1
+    PLAYING = 2
+    PAUSED = 3
+    GAME_OVER = 4
+    INVENTORY = 5
+    DIALOGUE = 6
+    SHOP = 7
+    CHARACTER_CREATION = 8
+
+class Direction(Enum):
+    """Направления движения"""
+    UP = 1
+    DOWN = 2
+    LEFT = 3
+    RIGHT = 4
+
+class ResourceType(Enum):
+    """Типы ресурсов"""
+    HEALTH = 1
+    MANA = 2
+    STAMINA = 3
+
+class ItemType(Enum):
+    """Типы предметов"""
+    WEAPON = 1
+    ARMOR = 2
+    CONSUMABLE = 3
+    QUEST = 4
+    MISC = 5
+
+class CharacterClass(Enum):
+    """Классы персонажей"""
+    WARRIOR = 1
+    MAGE = 2
+    ROGUE = 3
+    CLERIC = 4
+
+class GameEngine:
+    """Основной движок игры"""
+    
+    def __init__(self):
+        self.screen = pygame.display.set_mode((SCREEN_WIDTH, SCREEN_HEIGHT))
+        pygame.display.set_caption("Epic RPG Adventure")
+        self.clock = pygame.time.Clock()
+        self.running = True
+        self.state = GameState.MENU
+        self.font_small = pygame.font.Font(None, 24)
+        self.font_medium = pygame.font.Font(None, 32)
+        self.font_large = pygame.font.Font(None, 48)
+        
+        # Загрузка ресурсов
+        self.load_assets()
+        
+        # Игровые компоненты
+        self.player = None
+        self.camera = Camera(SCREEN_WIDTH, SCREEN_HEIGHT)
+        self.map_manager = MapManager()
+        self.collision_manager = CollisionManager()
+        self.quest_system = QuestSystem()
+        self.dialogue_system = DialogueSystem()
+        self.inventory_system = InventorySystem()
+        self.combat_system = CombatSystem()
+        self.particle_system = ParticleSystem()
+        self.sound_manager = SoundManager()
+        self.ui_manager = UIManager(self)
+        
+        # Игровые данные
+        self.current_map = None
+        self.npcs = []
+        self.enemies = []
+        self.items = []
+        self.particles = []
+        
+        # Меню
+        self.main_menu = MainMenu(self)
+        self.character_creation = CharacterCreation(self)
+        
+    def load_assets(self):
+        """Загрузка игровых ресурсов"""
+        self.images = {}
+        self.sounds = {}
+        
+        # Создание тестовых изображений (в реальной игре загружаем из файлов)
+        self.create_test_images()
+        
+        # Звуковые эффекты
+        self.sounds['background'] = None
+        self.sounds['attack'] = None
+        self.sounds['hit'] = None
+        self.sounds['level_up'] = None
+        self.sounds['pickup'] = None
+    
+    def create_test_images(self):
+        """Создание тестовых изображений"""
+        # Игрок
+        player_surface = pygame.Surface((32, 32))
+        player_surface.fill(BLUE)
+        pygame.draw.circle(player_surface, LIGHT_BLUE, (16, 16), 12)
+        self.images['player'] = player_surface
+        
+        # Враг
+        enemy_surface = pygame.Surface((32, 32))
+        enemy_surface.fill(RED)
+        pygame.draw.circle(enemy_surface, DARK_GRAY, (16, 16), 12)
+        self.images['enemy'] = enemy_surface
+        
+        # NPC
+        npc_surface = pygame.Surface((32, 32))
+        npc_surface.fill(GREEN)
+        pygame.draw.circle(npc_surface, YELLOW, (16, 16), 12)
+        self.images['npc'] = npc_surface
+        
+        # Предметы
+        item_surface = pygame.Surface((16, 16))
+        item_surface.fill(YELLOW)
+        pygame.draw.circle(item_surface, WHITE, (8, 8), 6)
+        self.images['item'] = item_surface
+        
+        # Тайлы
+        grass_surface = pygame.Surface((TILE_SIZE, TILE_SIZE))
+        grass_surface.fill(DARK_GREEN)
+        self.images['grass'] = grass_surface
+        
+        wall_surface = pygame.Surface((TILE_SIZE, TILE_SIZE))
+        wall_surface.fill(BROWN)
+        self.images['wall'] = wall_surface
+        
+        water_surface = pygame.Surface((TILE_SIZE, TILE_SIZE))
+        water_surface.fill(BLUE)
+        self.images['water'] = water_surface
+    
+    def new_game(self, player_name, character_class):
+        """Создание новой игры"""
+        self.player = Player(100, 100, player_name, character_class)
+        self.current_map = self.map_manager.load_map('start_village')
+        self.state = GameState.PLAYING
+        self.spawn_entities()
+    
+    def spawn_entities(self):
+        """Создание игровых сущностей"""
+        # Очистка предыдущих сущностей
+        self.npcs = []
+        self.enemies = []
+        self.items = []
+        
+        # Создание NPC
+        npc1 = NPC(200, 200, "Деревенский староста", "villager")
+        npc1.dialogue = [
+            "Добро пожаловать в нашу деревню!",
+            "Будь осторожен в лесу, там опасно.",
+            "Если найдешь зелья исцеления - принеси мне."
+        ]
+        npc1.quests = ["find_healing_potion"]
+        self.npcs.append(npc1)
+        
+        # Создание врагов
+        for i in range(5):
+            x = random.randint(300, 800)
+            y = random.randint(300, 600)
+            enemy = Enemy(x, y, "Гоблин", 1)
+            self.enemies.append(enemy)
+        
+        # Создание предметов
+        for i in range(3):
+            x = random.randint(100, 900)
+            y = random.randint(100, 700)
+            item = Item(x, y, f"Зелье исцеления {i+1}", ItemType.CONSUMABLE)
+            item.heal_amount = 20
+            self.items.append(item)
+    
+    def update(self, dt):
+        """Обновление игры"""
+        if self.state == GameState.PLAYING:
+            self.update_playing(dt)
+        elif self.state == GameState.MENU:
+            self.main_menu.update()
+        elif self.state == GameState.CHARACTER_CREATION:
+            self.character_creation.update()
+    
+    def update_playing(self, dt):
+        """Обновление во время игры"""
+        keys = pygame.key.get_pressed()
+        
+        # Обновление игрока
+        self.player.update(dt, keys, self.current_map)
+        
+        # Обновление камеры
+        self.camera.update(self.player.x, self.player.y)
+        
+        # Обновление врагов
+        for enemy in self.enemies:
+            enemy.update(dt, self.player, self.current_map)
+            # Проверка столкновений с игроком
+            if self.collision_manager.check_collision(self.player, enemy):
+                if self.combat_system.can_attack(self.player, enemy):
+                    damage, is_critical = self.combat_system.calculate_damage(self.player, enemy)
+                    enemy.take_damage(damage)
+                    self.particle_system.add_damage_text(enemy.x, enemy.y, damage, is_critical)
+                    self.sound_manager.play_sound('hit')
+                    
+                    if enemy.health <= 0:
+                        self.enemies.remove(enemy)
+                        self.player.gain_experience(enemy.exp_reward)
+                        # Создание предмета при смерти врага
+                        if random.random() < 0.3:  # 30% шанс дропа
+                            item = Item(enemy.x, enemy.y, "Золото", ItemType.MISC)
+                            item.value = random.randint(1, 10)
+                            self.items.append(item)
+        
+        # Обновление частиц
+        self.particle_system.update(dt)
+        
+        # Проверка подбора предметов
+        for item in self.items[:]:
+            if self.collision_manager.check_collision(self.player, item):
+                self.inventory_system.add_item(item)
+                self.items.remove(item)
+                self.sound_manager.play_sound('pickup')
+    
+    def draw(self):
+        """Отрисовка игры"""
+        self.screen.fill(BLACK)
+        
+        if self.state == GameState.PLAYING:
+            self.draw_playing()
+        elif self.state == GameState.MENU:
+            self.main_menu.draw()
+        elif self.state == GameState.CHARACTER_CREATION:
+            self.character_creation.draw()
+        elif self.state == GameState.PAUSED:
+            self.draw_playing()
+            self.ui_manager.draw_pause_menu()
+        elif self.state == GameState.INVENTORY:
+            self.draw_playing()
+            self.ui_manager.draw_inventory()
+        elif self.state == GameState.DIALOGUE:
+            self.draw_playing()
+            self.ui_manager.draw_dialogue()
+        
+        pygame.display.flip()
+    
+    Bruce
+    def draw_playing(self):
+        """Отрисовка во время игры"""
+        # Отрисовка карты
+        if self.current_map:
+            self.current_map.draw(self.screen, self.camera)
+        
+        # Отрисовка предметов
+        for item in self.items:
+            screen_x = item.x - self.camera.x
+            screen_y = item.y - self.camera.y
+            if 0 <= screen_x <= SCREEN_WIDTH and 0 <= screen_y <= SCREEN_HEIGHT:
+                self.screen.blit(self.images['item'], (screen_x, screen_y))
+        
+        # Отрисовка NPC
+        for npc in self.npcs:
+            screen_x = npc.x - self.camera.x
+            screen_y = npc.y - self.camera.y
+            if 0 <= screen_x <= SCREEN_WIDTH and 0 <= screen_y <= SCREEN_HEIGHT:
+                self.screen.blit(self.images['npc'], (screen_x, screen_y))
+        
+        # Отрисовка врагов
+        for enemy in self.enemies:
+            screen_x = enemy.x - self.camera.x
+            screen_y = enemy.y - self.camera.y
+            if 0 <= screen_x <= SCREEN_WIDTH and 0 <= screen_y <= SCREEN_HEIGHT:
+                self.screen.blit(self.images['enemy'], (screen_x, screen_y))
+                # Полоса здоровья врага
+                health_width = 30
+                health_height = 4
+                health_ratio = enemy.health / enemy.max_health
+                pygame.draw.rect(self.screen, RED, 
+                               (screen_x, screen_y - 10, health_width, health_height))
+                pygame.draw.rect(self.screen, GREEN, 
+                               (screen_x, screen_y - 10, health_width * health_ratio, health_height))
+        
+        # Отрисовка игрока
+        screen_x = self.player.x - self.camera.x
+        screen_y = self.player.y - self.camera.y
+        self.screen.blit(self.images['player'], (screen_x, screen_y))
+        
+        # Полосы здоровья и маны
+        self.ui_manager.draw_player_stats()
+        
+        # Отрисовка частиц
+        self.particle_system.draw(self.screen, self.camera)
+        
+        # Отрисовка UI
+        self.ui_manager.draw_hud()
+    
+    def handle_events(self):
+        """Обработка событий"""
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT:
+                self.running = False
+            
+            elif event.type == pygame.KEYDOWN:
+                if self.state == GameState.PLAYING:
+                    if event.key == pygame.K_ESCAPE:
+                        self.state = GameState.PAUSED
+                    elif event.key == pygame.K_i:
+                        self.state = GameState.INVENTORY
+                    elif event.key == pygame.K_SPACE:
+                        self.player.attack()
+                
+                elif self.state == GameState.PAUSED:
+                    if event.key == pygame.K_ESCAPE:
+                        self.state = GameState.PLAYING
+                
+                elif self.state == GameState.INVENTORY:
+                    if event.key == pygame.K_i or event.key == pygame.K_ESCAPE:
+                        self.state = GameState.PLAYING
+            
+            elif event.type == pygame.MOUSEBUTTONDOWN:
+                if self.state == GameState.MENU:
+                    self.main_menu.handle_click(event.pos)
+                elif self.state == GameState.CHARACTER_CREATION:
+                    self.character_creation.handle_click(event.pos)
+                elif self.state == GameState.PAUSED:
+                    self.ui_manager.handle_pause_click(event.pos)
+                elif self.state == GameState.INVENTORY:
+                    self.ui_manager.handle_inventory_click(event.pos)
+    
+    def run(self):
+        """Основной игровой цикл"""
+        last_time = pygame.time.get_ticks()
+        
+        while self.running:
+            current_time = pygame.time.get_ticks()
+            dt = (current_time - last_time) / 1000.0  # В секундах
+            last_time = current_time
+            
+            self.handle_events()
+            self.update(dt)
+            self.draw()
+            self.clock.tick(FPS)
+        
+        pygame.quit()
+
+class Camera:
+    """Камера"""
+    
+    def __init__(self, width, height):
+        self.width = width
+        self.height = height
+        self.x = 0
+        self.y = 0
+        self.target_x = 0
+        self.target_y = 0
+    
+    def update(self, target_x, target_y):
+        """Обновление камеры"""
+        self.target_x = target_x - self.width // 2
+        self.target_y = target_y - self.height // 2
+        
+        # Плавное следование
+        self.x += (self.target_x - self.x) * 0.1
+        self.y += (self.target_y - self.y) * 0.1
+
+class Player:
+    """Игрок"""
+    
+    def __init__(self, x, y, name, character_class):
+        self.x = x
+        self.y = y
+        self.width = 32
+        self.height = 32
+        self.speed = 150  # пикселей в секунду
+        self.direction = Direction.DOWN
+        self.name = name
+        self.character_class = character_class
+        
+        # Характеристики
+        self.level = 1
+        self.experience = 0
+        self.exp_to_next_level = 100
+        
+        # Ресурсы
+        self.health = 100
+        self.max_health = 100
+        self.mana = 50
+        self.max_mana = 50
+        self.stamina = 100
+        self.max_stamina = 100
+        
+        # Боевые характеристики
+        self.strength = 10
+        self.defense = 5
+        self.agility = 8
+        self.intelligence = 7
+        
+        # Движение и анимация
+        self.is_moving = False
+        self.is_attacking = False
+        self.attack_cooldown = 0
+        self.invincibility_timer = 0
+        
+        # Инвентарь и квесты
+        self.inventory = []
+        self.quests = []
+        self.gold = 100
+        
+        # Настройка характеристик по классу
+        self.setup_class_stats()
+    
+    def setup_class_stats(self):
+        """Настройка характеристик по классу"""
+        if self.character_class == CharacterClass.WARRIOR:
+            self.strength += 5
+            self.defense += 3
+            self.max_health += 50
+            self.health = self.max_health
+        elif self.character_class == CharacterClass.MAGE:
+            self.intelligence += 5
+            self.max_mana += 50
+            self.mana = self.max_mana
+        elif self.character_class == CharacterClass.ROGUE:
+            self.agility += 5
+            self.speed += 50
+        elif self.character_class == CharacterClass.CLERIC:
+            self.defense += 2
+            self.intelligence += 3
+            self.max_health += 25
+            self.health = self.max_health
+            self.max_mana += 25
+            self.mana = self.max_mana
+    
+    def update(self, dt, keys_pressed, game_map):
+        """Обновление игрока"""
+        self.handle_input(keys_pressed)
+        self.update_combat(dt)
+        self.update_resources(dt)
+        self.check_level_up()
+        
+        # Проверка коллизий
+        new_x, new_y = self.x, self.y
+        if self.is_moving:
+            move_distance = self.speed * dt
+            if self.direction == Direction.UP:
+                new_y -= move_distance
+            elif self.direction == Direction.DOWN:
+                new_y += move_distance
+            elif self.direction == Direction.LEFT:
+                new_x -= move_distance
+            elif self.direction == Direction.RIGHT:
+                new_x += move_distance
+                
+        # Проверка границ карты и коллизий
+        if self.can_move_to(new_x, new_y, game_map):
+            self.x = new_x
+            self.y = new_y
+    
+    def handle_input(self, keys):
+        """Обработка ввода"""
+        self.is_moving = False
+        
+        if keys[pygame.K_w] or keys[pygame.K_UP]:
+            self.direction = Direction.UP
+            self.is_moving = True
+        elif keys[pygame.K_s] or keys[pygame.K_DOWN]:
+            self.direction = Direction.DOWN
+            self.is_moving = True
+        elif keys[pygame.K_a] or keys[pygame.K_LEFT]:
+            self.direction = Direction.LEFT
+            self.is_moving = True
+        elif keys[pygame.K_d] or keys[pygame.K_RIGHT]:
+            self.direction = Direction.RIGHT
+            self.is_moving = True
+    
+    def can_move_to(self, x, y, game_map):
+        """Проверка возможности движения"""
+        # Проверка границ карты
+        if x < 0 or y < 0 or x > game_map.width * TILE_SIZE or y > game_map.height * TILE_SIZE:
+            return False
+        
+        # Проверка коллизий с тайлами
+        tile_x = int(x // TILE_SIZE)
+        tile_y = int(y // TILE_SIZE)
+        
+        if 0 <= tile_x < game_map.width and 0 <= tile_y < game_map.height:
+            tile_type = game_map.tiles[tile_y][tile_x]
+            if tile_type == 1:  # Стена
+                return False
+        
+        return True
+    
+    def attack(self):
+        """Атака"""
+        if self.attack_cooldown <= 0:
+            self.is_attacking = True
+            self.attack_cooldown = 0.5  # 0.5 секунды кулдаун
+    
+    def update_combat(self, dt):
+        """Обновление боевой системы"""
+        if self.attack_cooldown > 0:
+            self.attack_cooldown -= dt
+        
+        if self.invincibility_timer > 0:
+            self.invincibility_timer -= dt
+    
+    def update_resources(self, dt):
+        """Обновление ресурсов"""
+        # Восстановление stamina
+        if not self.is_moving:
+            self.stamina = min(self.max_stamina, self.stamina + 10 * dt)
+        
+        # Восстановление здоровья (медленно)
+        if self.health < self.max_health:
+            self.health = min(self.max_health, self.health + 1 * dt)
+        
+        # Восстановление маны (для магов быстрее)
+        mana_regen = 2 if self.character_class == CharacterClass.MAGE else 1
+        if self.mana < self.max_mana:
+            self.mana = min(self.max_mana, self.mana + mana_regen * dt)
+    
+    def take_damage(self, damage):
+        """Получение урона"""
+        if self.invincibility_timer <= 0:
+            actual_damage = max(1, damage - self.defense // 2)
+            self.health -= actual_damage
+            self.invincibility_timer = 1.0  # 1 секунда неуязвимости
+            return actual_damage
+        return 0
+    
+    def gain_experience(self, exp):
+        """Получение опыта"""
+        self.experience += exp
+        self.check_level_up()
+    
+    def check_level_up(self):
+        """Проверка повышения уровня"""
+        if self.experience >= self.exp_to_next_level:
+            self.level_up()
+    
+    def level_up(self):
+        """Повышение уровня"""
+        self.level += 1
+        self.experience -= self.exp_to_next_level
+        self.exp_to_next_level = int(self.exp_to_next_level * 1.5)
+        
+        # Увеличение характеристик
+        self.max_health += 10
+        self.health = self.max_health
+        self.max_mana += 5
+        self.mana = self.max_mana
+        self.strength += 2
+        self.defense += 1
+        self.agility += 1
+        self.intelligence += 1
+
+class Enemy:
+    """Враг"""
+    
+    def __init__(self, x, y, enemy_type, level):
+        self.x = x
+        self.y = y
+        self.width = 32
+        self.height = 32
+        self.enemy_type = enemy_type
+        self.level = level
+        
+        # Характеристики
+        self.max_health = 30 + level * 10
+        self.health = self.max_health
+        self.attack_power = 5 + level * 2
+        self.defense = 2 + level
+        self.speed = 50 + level * 5
+        self.exp_reward = 10 + level * 5
+        self.gold_reward = 1 + level
+        
+        # AI
+        self.ai_state = "patrol"  # patrol, chase, attack
+        self.patrol_points = [(x, y), (x + 100, y), (x + 100, y + 100), (x, y + 100)]
+        self.current_patrol_point = 0
+        self.detection_range = 150
+        self.attack_range = 30
+        self.attack_cooldown = 0
+    
+    def update(self, dt, player, game_map):
+        """Обновление врага"""
+        self.update_ai(dt, player)
+        self.update_combat(dt)
+    
+    def update_ai(self, dt, player):
+        """Обновление ИИ"""
+        # Расстояние до игрока
+        distance_to_player = math.sqrt((self.x - player.x)**2 + (self.y - player.y)**2)
+        
+        if distance_to_player <= self.detection_range:
+            # Преследование игрока
+            if distance_to_player > self.attack_range:
+                # Движение к игроку
+                dx = player.x - self.x
+                dy = player.y - self.y
+                distance = math.sqrt(dx**2 + dy**2)
+                
+                if distance > 0:
+                    self.x += (dx / distance) * self.speed * dt
+                    self.y += (dy / distance) * self.speed * dt
+            else:
+                # Атака игрока
+                if self.attack_cooldown <= 0:
+                    damage = self.attack_power
+                    actual_damage = player.take_damage(damage)
+                    self.attack_cooldown = 1.0  # 1 секунда кулдаун
+        else:
+            # Патрулирование
+            self.patrol(dt)
+    
+    def patrol(self, dt):
+        """Патрулирование"""
+        if self.patrol_points:
+            target_x, target_y = self.patrol_points[self.current_patrol_point]
+            dx = target_x - self.x
+            dy = target_y - self.y
+            distance = math.sqrt(dx**2 + dy**2)
+            
+            if distance < 10:  # Достигли точки
+                self.current_patrol_point = (self.current_patrol_point + 1) % len(self.patrol_points)
+            else:
+                self.x += (dx / distance) * self.speed * dt
+                self.y += (dy / distance) * self.speed * dt
+    
+    def update_combat(self, dt):
+        """Обновление боевой системы"""
+        if self.attack_cooldown > 0:
+            self.attack_cooldown -= dt
+    
+    def take_damage(self, damage):
+        """Получение урона"""
+        self.health -= damage
+        if self.health <= 0:
+            self.health = 0
+
+class NPC:
+    """Неигровой персонаж"""
+    
+    def __init__(self, x, y, name, npc_type):
+        self.x = x
+        self.y = y
+        self.width = 32
+        self.height = 32
+        self.name = name
+        self.npc_type = npc_type
+        self.dialogue = []
+        self.quests = []
+        self.shop_items = []
+
+class Item:
+    """Предмет"""
+    
+    def __init__(self, x, y, name, item_type):
+        self.x = x
+        self.y = y
+        self.width = 16
+        self.height = 16
+        self.name = name
+        self.item_type = item_type
+        self.value = 0
+        self.heal_amount = 0
+        self.mana_restore = 0
+        self.strength_bonus = 0
+        self.defense_bonus = 0
+
+class TileMap:
+    """Карта из тайлов"""
+    
+    def __init__(self, width, height):
+        self.width = width
+        self.height = height
+        self.tiles = [[0 for _ in range(width)] for _ in range(height)]
+        self.colliders = []
+    
+    def load_from_data(self, tile_data):
+        """Загрузка карты из данных"""
+        self.tiles = tile_data
+    
+    def draw(self, screen, camera):
+        """Отрисовка карты"""
+        start_x = max(0, int(camera.x // TILE_SIZE))
+        end_x = min(self.width, int((camera.x + SCREEN_WIDTH) // TILE_SIZE) + 1)
+        start_y = max(0, int(camera.y // TILE_SIZE))
+        end_y = min(self.height, int((camera.y + SCREEN_HEIGHT) // TILE_SIZE) + 1)
+        
+        for y in range(start_y, end_y):
+            for x in range(start_x, end_x):
+                tile_type = self.tiles[y][x]
+                screen_x = x * TILE_SIZE - camera.x
+                screen_y = y * TILE_SIZE - camera.y
+                
+                if tile_type == 0:  # Трава
+                    pygame.draw.rect(screen, DARK_GREEN, 
+                                   (screen_x, screen_y, TILE_SIZE, TILE_SIZE))
+                elif tile_type == 1:  # Стена
+                    pygame.draw.rect(screen, BROWN, 
+                                   (screen_x, screen_y, TILE_SIZE, TILE_SIZE))
+                elif tile_type == 2:  # Вода
+                    pygame.draw.rect(screen, BLUE, 
+                                   (screen_x, screen_y, TILE_SIZE, TILE_SIZE))
+
+class MapManager:
+    """Менеджер карт"""
+    
+    def __init__(self):
+        self.maps = {}
+        self.load_default_maps()
+    
+    def load_default_maps(self):
+        """Загрузка стандартных карт"""
+        # Стартовая деревня
+        village_map = TileMap(50, 50)
+        # Создание простой карты с стенами по краям
+        for y in range(50):
+            for x in range(50):
+                if x == 0 or y == 0 or x == 49 or y == 49:
+                    village_map.tiles[y][x] = 1  # Стена
+                elif x < 5 or y < 5 or x > 45 or y > 45:
+                    village_map.tiles[y][x] = 1  # Стена
+                elif random.random() < 0.05:
+                    village_map.tiles[y][x] = 1  # Случайные стены
+                else:
+                    village_map.tiles[y][x] = 0  # Трава
+        
+        self.maps['start_village'] = village_map
+    
+    def load_map(self, map_name):
+        """Загрузка карты"""
+        return self.maps.get(map_name, self.maps['start_village'])
+
+class CollisionManager:
+    """Менеджер коллизий"""
+    
+    def check_collision(self, obj1, obj2):
+        """Проверка коллизии между двумя объектами"""
+        return (obj1.x < obj2.x + obj2.width and
+                obj1.x + obj1.width > obj2.x and
+                obj1.y < obj2.y + obj2.height and
+                obj1.y + obj1.height > obj2.y)
+
+class CombatSystem:
+    """Боевая система"""
+    
+    def can_attack(self, attacker, target):
+        """Проверка возможности атаки"""
+        distance = math.sqrt((attacker.x - target.x)**2 + (attacker.y - target.y)**2)
+        return distance <= 40  # Радиус атаки
+    
+    def calculate_damage(self, attacker, defender):
+        """Расчет урона"""
+        base_damage = attacker.strength
+        # Добавляем случайность
+        base_damage += random.randint(-2, 2)
+        
+        # Расчет защиты
+        defense = defender.defense
+        damage_reduction = min(0.8, defense / (defense + 50))
+        final_damage = base_damage * (1 - damage_reduction)
+        
+        # Критический удар
+        is_critical = random.random() < 0.1  # 10% шанс крита
+        if is_critical:
+            final_damage *= 2
+            
+        return max(1, int(final_damage)), is_critical
+
+class ParticleSystem:
+    """Система частиц"""
+    
+    def __init__(self):
+        self.particles = []
+    
+    def add_damage_text(self, x, y, damage, is_critical=False):
+        """Добавление текста урона"""
+        particle = {
+            'x': x,
+            'y': y,
+            'text': str(damage),
+            'color': RED if not is_critical else YELLOW,
+            'lifetime': 1.0,
+            'velocity_y': -50,
+            'font_size': 24 if not is_critical else 32,
+            'is_critical': is_critical
+        }
+        self.particles.append(particle)
+    
+    def update(self, dt):
+        """Обновление частиц"""
+        for particle in self.particles[:]:
+            particle['lifetime'] -= dt
+            particle['y'] += particle['velocity_y'] * dt
+            
+            if particle['lifetime'] <= 0:
+                self.particles.remove(particle)
+    
+    def draw(self, screen, camera):
+        """Отрисовка частиц"""
+        font = pygame.font.Font(None, 24)
+        for particle in self.particles:
+            screen_x = particle['x'] - camera.x
+            screen_y = particle['y'] - camera.y
+            text_surface = font.render(particle['text'], True, particle['color'])
+            screen.blit(text_surface, (screen_x, screen_y))
+
+class SoundManager:
+    """Менеджер звуков"""
+    
+    def __init__(self):
+        self.sounds = {}
+    
+    def play_sound(self, sound_name):
+        """Воспроизведение звука"""
+        # В реальной игре здесь будет воспроизведение звука
+        pass
+
+class UIManager:
+    """Менеджер пользовательского интерфейса"""
+    
+    def __init__(self, game_engine):
+        self.game_engine = game_engine
+        self.font_small = pygame.font.Font(None, 24)
+        self.font_medium = pygame.font.Font(None, 32)
+        self.font_large = pygame.font.Font(None, 48)
+    
+    def draw_player_stats(self):
+        """Отрисовка статистики игрока"""
+        # Полоса здоровья
+        pygame.draw.rect(self.game_engine.screen, RED, (10, 10, 200, 20))
+        health_ratio = self.game_engine.player.health / self.game_engine.player.max_health
+        pygame.draw.rect(self.game_engine.screen, GREEN, (10, 10, 200 * health_ratio, 20))
+        health_text = self.font_small.render(
+            f"HP: {int(self.game_engine.player.health)}/{self.game_engine.player.max_health}", 
+            True, WHITE)
+        self.game_engine.screen.blit(health_text, (15, 12))
+        
+        # Полоса маны
+        pygame.draw.rect(self.game_engine.screen, DARK_GRAY, (10, 35, 200, 15))
+        mana_ratio = self.game_engine.player.mana / self.game_engine.player.max_mana
+        pygame.draw.rect(self.game_engine.screen, BLUE, (10, 35, 200 * mana_ratio, 15))
+        mana_text = self.font_small.render(
+            f"MP: {int(self.game_engine.player.mana)}/{self.game_engine.player.max_mana}", 
+            True, WHITE)
+        self.game_engine.screen.blit(mana_text, (15, 35))
+        
+        # Уровень и опыт
+        level_text = self.font_small.render(
+            f"Lv.{self.game_engine.player.level} XP: {self.game_engine.player.experience}/{self.game_engine.player.exp_to_next_level}", 
+            True, WHITE)
+        self.game_engine.screen.blit(level_text, (10, 55))
+    
+    def draw_hud(self):
+        """Отрисовка HUD"""
+        # Золото
+        gold_text = self.font_small.render(f"Золото: {self.game_engine.player.gold}", True, YELLOW)
+        self.game_engine.screen.blit(gold_text, (SCREEN_WIDTH - 150, 10))
+        
+        # Подсказки
+        hint_text = self.font_small.render("I - Инвентарь, ESC - Меню", True, WHITE)
+        self.game_engine.screen.blit(hint_text, (SCREEN_WIDTH - 250, SCREEN_HEIGHT - 30))
+    
+    def draw_pause_menu(self):
+        """Отрисовка меню паузы"""
+        # Полупрозрачный оверлей
+        overlay = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT))
+        overlay.set_alpha(128)
+        overlay.fill(BLACK)
+        self.game_engine.screen.blit(overlay, (0, 0))
+        
+        # Меню
+        menu_rect = pygame.Rect(SCREEN_WIDTH//2 - 150, SCREEN_HEIGHT//2 - 100, 300, 200)
+        pygame.draw.rect(self.game_engine.screen, DARK_GRAY, menu_rect)
+        pygame.draw.rect(self.game_engine.screen, WHITE, menu_rect, 2)
+        
+        # Текст
+        pause_text = self.font_large.render("ПАУЗА", True, WHITE)
+        self.game_engine.screen.blit(pause_text, 
+                                   (SCREEN_WIDTH//2 - pause_text.get_width()//2, 
+                                    SCREEN_HEIGHT//2 - 80))
+        
+        # Кнопки
+        resume_text = self.font_medium.render("Продолжить (ESC)", True, WHITE)
+        self.game_engine.screen.blit(resume_text, 
+                                   (SCREEN_WIDTH//2 - resume_text.get_width()//2, 
+                                    SCREEN_HEIGHT//2 - 20))
+        
+        quit_text = self.font_medium.render("Выйти в меню", True, WHITE)
+        self.game_engine.screen.blit(quit_text, 
+                                   (SCREEN_WIDTH//2 - quit_text.get_width()//2, 
+                                    SCREEN_HEIGHT//2 + 30))
+    
+    def handle_pause_click(self, pos):
+        """Обработка кликов в меню паузы"""
+        x, y = pos
+        # Кнопка "Выйти в меню"
+        if (SCREEN_WIDTH//2 - 100 <= x <= SCREEN_WIDTH//2 + 100 and
+            SCREEN_HEIGHT//2 + 20 <= y <= SCREEN_HEIGHT//2 + 60):
+            self.game_engine.state = GameState.MENU
+    
+    def draw_inventory(self):
+        """Отрисовка инвентаря"""
+        # Полупрозрачный оверлей
+        overlay = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT))
+        overlay.set_alpha(128)
+        overlay.fill(BLACK)
+        self.game_engine.screen.blit(overlay, (0, 0))
+        
+        # Окно инвентаря
+        inv_rect = pygame.Rect(100, 100, SCREEN_WIDTH - 200, SCREEN_HEIGHT - 200)
+        pygame.draw.rect(self.game_engine.screen, DARK_GRAY, inv_rect)
+        pygame.draw.rect(self.game_engine.screen, WHITE, inv_rect, 2)
+        
+        # Заголовок
+        title_text = self.font_large.render("Инвентарь", True, WHITE)
+        self.game_engine.screen.blit(title_text, 
+                                   (SCREEN_WIDTH//2 - title_text.get_width()//2, 120))
+        
+        # Предметы
+        items = self.game_engine.player.inventory
+        for i, item in enumerate(items[:20]):  # Показываем максимум 20 предметов
+            row = i // 5
+            col = i % 5
+            item_x = 150 + col * 80
+            item_y = 200 + row * 80
+            
+            # Ячейка предмета
+            pygame.draw.rect(self.game_engine.screen, GRAY, 
+                           (item_x, item_y, 64, 64))
+            pygame.draw.rect(self.game_engine.screen, WHITE, 
+                           (item_x, item_y, 64, 64), 1)
+            
+            # Название предмета
+            name_text = self.font_small.render(item.name[:10], True, WHITE)
+            self.game_engine.screen.blit(name_text, (item_x, item_y + 70))
+    
+    def draw_dialogue(self):
+        """Отрисовка диалога"""
+        # Панель диалога внизу экрана
+        dialog_rect = pygame.Rect(50, SCREEN_HEIGHT - 150, SCREEN_WIDTH - 100, 120)
+        pygame.draw.rect(self.game_engine.screen, DARK_GRAY, dialog_rect)
+        pygame.draw.rect(self.game_engine.screen, WHITE, dialog_rect, 2)
+        
+        # Текст диалога
+        if hasattr(self.game_engine.dialogue_system, 'current_dialogue'):
+            text = self.game_engine.dialogue_system.current_dialogue
+            text_surface = self.font_medium.render(text[:50], True, WHITE)
+            self.game_engine.screen.blit(text_surface, (70, SCREEN_HEIGHT - 130))
+            
+            # Подсказка
+            hint_text = self.font_small.render("Нажмите SPACE чтобы продолжить", True, WHITE)
+            self.game_engine.screen.blit(hint_text, 
+                                       (SCREEN_WIDTH//2 - hint_text.get_width()//2, 
+                                        SCREEN_HEIGHT - 80))
+
+class MainMenu:
+    """Главное меню"""
+    
+    def __init__(self, game_engine):
+        self.game_engine = game_engine
+    
+    def update(self):
+        """Обновление меню"""
+        pass
+    
+    def draw(self):
+        """Отрисовка меню"""
+        # Фон
+        self.game_engine.screen.fill(DARK_GREEN)
+        
+        # Заголовок
+        title_text = self.game_engine.font_large.render("Epic RPG Adventure", True, WHITE)
+        self.game_engine.screen.blit(title_text, 
+                                   (SCREEN_WIDTH//2 - title_text.get_width()//2, 150))
+        
+        # Кнопки
+        new_game_text = self.game_engine.font_medium.render("Новая игра", True, WHITE)
+        self.game_engine.screen.blit(new_game_text, 
+                                   (SCREEN_WIDTH//2 - new_game_text.get_width()//2, 300))
+        
+        load_game_text = self.game_engine.font_medium.render("Загрузить игру", True, WHITE)
+        self.game_engine.screen.blit(load_game_text, 
+                                   (SCREEN_WIDTH//2 - load_game_text.get_width()//2, 350))
+        
+        settings_text = self.game_engine.font_medium.render("Настройки", True, WHITE)
+        self.game_engine.screen.blit(settings_text, 
+                                   (SCREEN_WIDTH//2 - settings_text.get_width()//2, 400))
+        
+        quit_text = self.game_engine.font_medium.render("Выйти", True, WHITE)
+        self.game_engine.screen.blit(quit_text, 
+                                   (SCREEN_WIDTH//2 - quit_text.get_width()//2, 450))
+    
+    def handle_click(self, pos):
+        """Обработка кликов"""
+        x, y = pos
+        
+        # Кнопка "Новая игра"
+        if (SCREEN_WIDTH//2 - 100 <= x <= SCREEN_WIDTH//2 + 100 and
+            290 <= y <= 330):
+            self.game_engine.state = GameState.CHARACTER_CREATION
+        
+        # Кнопка "Выйти"
+        elif (SCREEN_WIDTH//2 - 100 <= x <= SCREEN_WIDTH//2 + 100 and
+              440 <= y <= 480):
+            self.game_engine.running = False
+
+class CharacterCreation:
+    """Создание персонажа"""
+    
+    def __init__(self, game_engine):
+        self.game_engine = game_engine
+        self.player_name = ""
+        self.selected_class = CharacterClass.WARRIOR
+        self.active_input = False
+    
+    def update(self):
+        """Обновление экрана создания персонажа"""
+        pass
+    
+    def draw(self):
+        """Отрисовка экрана создания персонажа"""
+        # Фон
+        self.game_engine.screen.fill(DARK_GREEN)
+        
+        # Заголовок
+        title_text = self.game_engine.font_large.render("Создание персонажа", True, WHITE)
+        self.game_engine.screen.blit(title_text, 
+                                   (SCREEN_WIDTH//2 - title_text.get_width()//2, 100))
+        
+        # Поле ввода имени
+        name_label = self.game_engine.font_medium.render("Имя персонажа:", True, WHITE)
+        self.game_engine.screen.blit(name_label, (200, 200))
+        
+        input_rect = pygame.Rect(200, 240, 300, 40)
+        pygame.draw.rect(self.game_engine.screen, WHITE, input_rect, 2)
+        
+        name_text = self.game_engine.font_medium.render(self.player_name, True, WHITE)
+        self.game_engine.screen.blit(name_text, (210, 250))
+        
+        # Выбор класса
+        class_label = self.game_engine.font_medium.render("Класс:", True, WHITE)
+        self.game_engine.screen.blit(class_label, (200, 300))
+        
+        classes = [
+            (CharacterClass.WARRIOR, "Воин"),
+            (CharacterClass.MAGE, "Маг"),
+            (CharacterClass.ROGUE, "Разбойник"),
+            (CharacterClass.CLERIC, "Жрец")
+        ]
+        
+        for i, (class_type, class_name) in enumerate(classes):
+            color = YELLOW if self.selected_class == class_type else WHITE
+            class_text = self.game_engine.font_medium.render(class_name, True, color)
+            self.game_engine.screen.blit(class_text, (250, 350 + i * 40))
+        
+        # Кнопки
+        start_text = self.game_engine.font_medium.render("Начать игру", True, WHITE)
+        self.game_engine.screen.blit(start_text, 
+                                   (SCREEN_WIDTH//2 - start_text.get_width()//2, 600))
+        
+        back_text = self.game_engine.font_medium.render("Назад", True, WHITE)
+        self.game_engine.screen.blit(back_text, (100, 600))
+    
+    def handle_click(self, pos):
+        """Обработка кликов"""
+        x, y = pos
+        
+        # Поле ввода имени
+        if 200 <= x <= 500 and 240 <= y <= 280:
+            self.active_input = True
+        else:
+            self.active_input = False
+        
+        # Выбор класса
+        classes = [
+            (CharacterClass.WARRIOR, 350),
+            (CharacterClass.MAGE, 390),
+            (CharacterClass.ROGUE, 430),
+            (CharacterClass.CLERIC, 470)
+        ]
+        
+        for class_type, class_y in classes:
+            if 250 <= x <= 400 and class_y - 10 <= y <= class_y + 30:
+                self.selected_class = class_type
+        
+        # Кнопка "Начать игру"
+        if (SCREEN_WIDTH//2 - 100 <= x <= SCREEN_WIDTH//2 + 100 and
+            590 <= y <= 630):
+            if self.player_name.strip():
+                self.game_engine.new_game(self.player_name.strip(), self.selected_class)
+        
+        # Кнопка "Назад"
+        elif 100 <= x <= 200 and 590 <= y <= 630:
+            self.game_engine.state = GameState.MENU
+    
+    def handle_text_input(self, event):
+        """Обработка ввода текста"""
+        if self.active_input:
+            if event.key == pygame.K_BACKSPACE:
+                self.player_name = self.player_name[:-1]
+            elif event.key == pygame.K_RETURN:
+                if self.player_name.strip():
+                    self.game_engine.new_game(self.player_name.strip(), self.selected_class)
+            else:
+                if len(self.player_name) < 20:
+                    self.player_name += event.unicode
+
+class QuestSystem:
+    """Система квестов"""
+    
+    def __init__(self):
+        self.quests = {}
+        self.active_quests = []
+        self.completed_quests = []
+    
+    def add_quest(self, quest_id, quest_data):
+        """Добавление квеста"""
+        self.quests[quest_id] = quest_data
+    
+    def start_quest(self, quest_id):
+        """Начало квеста"""
+        if quest_id in self.quests and quest_id not in self.completed_quests:
+            self.active_quests.append(quest_id)
+    
+    def complete_quest(self, quest_id):
+        """Завершение квеста"""
+        if quest_id in self.active_quests:
+            self.active_quests.remove(quest_id)
+            self.completed_quests.append(quest_id)
+
+class DialogueSystem:
+    """Система диалогов"""
+    
+    def __init__(self):
+        self.current_dialogue = ""
+        self.dialogue_history = []
+    
+    def start_dialogue(self, npc):
+        """Начало диалога"""
+        if npc.dialogue:
+            self.current_dialogue = npc.dialogue[0]
+            self.dialogue_history.append(self.current_dialogue)
+
+class InventorySystem:
+    """Система инвентаря"""
+    
+    def __init__(self):
+        self.items = []
+        self.max_slots = 30
+    
+    def add_item(self, item):
+        """Добавление предмета"""
+        if len(self.items) < self.max_slots:
+            self.items.append(item)
+            return True
+        return False
+    
+    def remove_item(self, item):
+        """Удаление предмета"""
+        if item in self.items:
+            self.items.remove(item)
+            return True
+        return False
+    
+    def use_item(self, item, player):
+        """Использование предмета"""
+        if item.item_type == ItemType.CONSUMABLE:
+            if item.heal_amount > 0:
+                player.health = min(player.max_health, player.health + item.heal_amount)
+            if item.mana_restore > 0:
+                player.mana = min(player.max_mana, player.mana + item.mana_restore)
+            self.remove_item(item)
+            return True
+        return False
+
+def main():
+    """Главная функция"""
+    try:
+        game = GameEngine()
+        game.run()
+    except Exception as e:
+        print(f"Ошибка запуска игры: {e}")
+        pygame.quit()
+
+if __name__ == "__main__":
+    main()
